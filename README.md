@@ -1,5 +1,7 @@
 # claude-ollama
 
+[![Support this on Ko-fi](https://img.shields.io/badge/Ko--fi-support%20this-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/aadityavmore)
+
 Claude Desktop, pointed at a local Ollama gateway, without editing anything the
 app owns.
 
