@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # ---------------------------------------------------------------- locations --
 
@@ -164,7 +164,10 @@ find_bundle() {
     "$LINK"
   do
     if [ -n "$candidate" ] && [ -d "$candidate" ]; then
-      echo "$candidate"
+      # Resolved, not as found: a cask moves the app into /Applications and
+      # leaves a symlink to it in the Caskroom, and reporting the Caskroom path
+      # would have install-app offer to link a bundle that is already installed.
+      ( cd -P -- "$candidate" 2>/dev/null && pwd -P ) || echo "$candidate"
       return 0
     fi
   done
