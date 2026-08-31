@@ -51,5 +51,8 @@ with open(path, "w") as handle:
 PY
 fi
 
+if [ "$built" = shell ]; then
+  echo "note: built without the menu bar item (no swiftc)" >&2
+fi
+
 echo "$bundle"
-[ "$built" = shell ] && echo "note: built without the menu bar item (no swiftc)" >&2
