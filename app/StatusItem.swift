@@ -54,6 +54,23 @@ struct Status: Decodable {
     let config: String
 }
 
+/// The addresses this app sends people to.
+///
+/// The tip jar is a different account from the GitHub one and is spelled
+/// differently: GitHub Sponsors cannot pay into an Indian account, so the money
+/// goes through Ko-fi, whose handle carries no hyphens. Neither name derives
+/// from the other, and `.github/FUNDING.yml` and the README carry the same two
+/// spellings. A build already installed keeps whatever it was compiled with, so
+/// a rename that touched only one of them would leave a dead link in every copy
+/// out in the world.
+enum Links {
+    static let owner = "aaditya-v-more"
+    static let kofiAccount = "aadityavmore"
+
+    static let source = URL(string: "https://github.com/\(owner)/claude-ollama")!
+    static let support = URL(string: "https://ko-fi.com/\(kofiAccount)")!
+}
+
 enum Launcher {
     /// The `claude-ollama` this bundle belongs to. Checked in the order a
     /// source checkout, a cask and an Intel prefix would each put it.
@@ -183,7 +200,7 @@ final class Controller: NSObject, NSApplicationDelegate {
             add("Pacing proxy not running")
             menu.addItem(.separator())
             addAction("Open Settings File", #selector(openConfig))
-            addAction("Quit", #selector(quit))
+            addFooter()
             return
         }
 
@@ -216,6 +233,17 @@ final class Controller: NSObject, NSApplicationDelegate {
         addAction("Open Settings File", #selector(openConfig))
         menu.addItem(.separator())
         addAction("Restart Proxy", #selector(restartProxy))
+        addFooter()
+    }
+
+    /// Where it came from and who pays for it. Free, and staying that way, so
+    /// the tip jar is the only thing asked of anyone — once, at the bottom of a
+    /// menu they had to open on purpose.
+    private func addFooter() {
+        menu.addItem(.separator())
+        addAction("Support", #selector(openSupport), symbol: "heart")
+        addAction("Source", #selector(openSource),
+                  symbol: "chevron.left.forwardslash.chevron.right")
         menu.addItem(.separator())
         addAction("Quit", #selector(quit))
     }
@@ -234,10 +262,13 @@ final class Controller: NSObject, NSApplicationDelegate {
         menu.addItem(entry)
     }
 
-    private func addAction(_ title: String, _ selector: Selector) {
+    private func addAction(_ title: String, _ selector: Selector, symbol: String? = nil) {
         let entry = NSMenuItem(title: title, action: selector, keyEquivalent: "")
         entry.target = self
         entry.isEnabled = true
+        if let symbol = symbol {
+            entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        }
         menu.addItem(entry)
     }
 
@@ -268,6 +299,10 @@ final class Controller: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self.poll() }
         }
     }
+
+    @objc private func openSupport() { NSWorkspace.shared.open(Links.support) }
+
+    @objc private func openSource() { NSWorkspace.shared.open(Links.source) }
 
     @objc private func quit() { NSApp.terminate(nil) }
 }

@@ -201,6 +201,16 @@ Add `--zap` to take the settings file and the proxy log with it. The profile at
 `~/Library/Application Support/Claude-3p` is Claude Desktop's, not this tool's,
 and is left alone either way. Delete it yourself if you want the chats gone too.
 
+## Supporting it
+
+Free, and staying that way — no licence to buy, no account to make, nothing
+measured and sent anywhere. If it saved you the trouble, there's a
+[tip jar](https://ko-fi.com/aadityavmore). Ollama moves its gateway around,
+Claude Desktop moves its own furniture every few weeks, and that's what the
+money is for.
+
+The same link is under **Support** in the menu bar item.
+
 ## Licence
 
 MIT.

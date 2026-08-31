@@ -1,0 +1,6 @@
+# Puts the funding button at the top of the repository. GitHub Sponsors is not
+# what it points at: Sponsors cannot pay into an Indian account, so the money
+# goes through Ko-fi, under a handle spelled without hyphens. The GitHub name
+# and this one are two separate spellings and neither derives from the other;
+# app/StatusItem.swift carries the same pair.
+ko_fi: aadityavmore
