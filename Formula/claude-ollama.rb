@@ -1,8 +1,8 @@
 class ClaudeOllama < Formula
   desc "Run Claude Desktop against a local Ollama gateway, paced and untouched"
   homepage "https://github.com/aaditya-v-more/homebrew-claude-ollama"
-  url "https://github.com/aaditya-v-more/homebrew-claude-ollama/archive/refs/tags/v1.0.0.tar.gz"
-  sha256 "@@SHA256@@"
+  url "https://github.com/aaditya-v-more/homebrew-claude-ollama/releases/download/v1.0.0/claude-ollama-1.0.0.tar.gz"
+  sha256 "0f1b43d44c624d60eff90444bfab2fbad1fb92aefdeac27590fb99f8ba1db1e1"
   license "MIT"
   head "https://github.com/aaditya-v-more/homebrew-claude-ollama.git", branch: "main"
 
