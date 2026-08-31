@@ -25,6 +25,10 @@ claude-ollama install-app
 
 Or in one line: `brew install aaditya-v-more/claude-ollama/claude-ollama`.
 
+The formula itself lives in
+[aaditya-v-more/homebrew-claude-ollama](https://github.com/aaditya-v-more/homebrew-claude-ollama);
+this repository is the source it builds from.
+
 This assumes you already have Claude Desktop in `/Applications` and Ollama
 serving its Claude-compatible gateway on `127.0.0.1:11435`. It installs
 neither.
@@ -132,6 +136,18 @@ brew untap aaditya-v-more/claude-ollama
 The profile at `~/Library/Application Support/Claude-3p` is Claude Desktop's,
 not this tool's, and is left alone. Delete it yourself if you want the chats
 gone too.
+
+## Without Homebrew
+
+```sh
+git clone https://github.com/aaditya-v-more/claude-ollama.git
+cd claude-ollama
+./Tools/make-app.sh . "$PWD/bin/claude-ollama"
+./bin/claude-ollama install-app
+```
+
+Put `bin` on your `PATH` if you want the command as well. Everything resolves
+relative to the checkout, so there is nothing else to set.
 
 ## Licence
 

@@ -1,6 +1,0 @@
-# The formula is read from the tap checkout, never from the release tarball.
-# Keeping it out of the archive means the tarball has no second, stale copy of
-# its own checksum in it.
-Formula/ export-ignore
-.gitattributes export-ignore
-.gitignore export-ignore
