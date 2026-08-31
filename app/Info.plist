@@ -15,7 +15,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
-	<string>launch</string>
+	<string>ClaudeOllama</string>
 	<key>CFBundleIconFile</key>
 	<string>icon</string>
 	<key>LSMinimumSystemVersion</key>

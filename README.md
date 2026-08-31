@@ -13,7 +13,8 @@ Two pieces:
   requests to a fixed number in flight, retries the ones upstream still
   rejects, and repairs two things the gateway gets wrong on the way through.
 
-Plus a `Claude (Ollama).app` launcher so it has a Dock icon.
+Plus a `Claude (Ollama).app` launcher, which stays in the menu bar while Claude
+is open and shows what the proxy is doing.
 
 ## Install
 
@@ -45,7 +46,17 @@ same thing happens: the proxy starts if it isn't already up, the profile's
 endpoint is re-pointed at it, and Claude Desktop launches with the overrides in
 its environment.
 
-The proxy exits on its own once the app quits.
+Launched from the app, a menu bar item appears alongside it showing the port
+the proxy settled on, how many requests are in flight against the limit, how
+many the gateway has pushed back on, and how many models were found to have a
+1M window. It can copy the endpoint, open the log or the settings file, and
+restart the proxy without restarting Claude.
+
+Both the menu item and the proxy exit on their own once Claude quits.
+
+If the configured port is already taken by something else, the proxy moves to
+the next free one and the profile's endpoint is rewritten to match, so a busy
+port needs no attention. `claude-ollama status` says where it ended up.
 
 ## Settings
 
@@ -95,13 +106,14 @@ already bounded by `SUBAGENTS`.
 | --- | --- | --- |
 | `GATEWAY_PORT` | `11435` | Ollama's Claude gateway, on localhost |
 | `PACE_UPSTREAM` | `127.0.0.1:11435` | The gateway as `host:port`; wins over `GATEWAY_PORT` |
-| `PACE_PORT` | `11436` | Where the proxy listens |
+| `PACE_PORT` | `11436` | Where the proxy listens; a launch moves to the next free port if this one is taken |
 | `PACE_LIMIT` | `3` | Requests allowed upstream at once |
 | `PACE_ATTEMPTS` | `6` | Tries before giving up on a 429/529/503 |
 | `PACE_BASE_DELAY` | `1.0` | Seconds before the first retry |
 | `PACE_MAX_DELAY` | `30.0` | Ceiling the delay doubles towards, and the `Retry-After` value |
 | `PACE_TIMEOUT` | `1800.0` | Upstream socket timeout, in seconds |
 | `PACE_OLLAMA_API` | `127.0.0.1:11434` | Ollama's own API, for reading real context lengths |
+| `PACE_TAG_BUDGET` | `2.0` | Seconds a catalog response may spend resolving context lengths before answering without them |
 | `PACE_EXIT_WITH_APP` | `on` | `off` leaves the proxy running after Claude quits |
 | `PACE_LOG` | `~/.local/state/claude-ollama-pace.log` | Where a proxy started by the launcher writes |
 
@@ -135,6 +147,13 @@ It also fixes two smaller things:
   is exact-match and 404s it, which surfaces as "gateway returned no usable
   models" even when inference works fine. The proxy collapses the path.
 
+Reading those context lengths is not free — it is one `/api/show` per model —
+and that same setup probe gives the gateway only a few seconds before declaring
+the models unusable. So the proxy resolves them all in parallel at startup, the
+launcher waits for that to finish before opening Claude, and any lookup still
+outstanding when a catalog request arrives is answered without waiting and
+filled in for the next one.
+
 One more piece of housekeeping: opening Ollama's settings UI rewrites the
 profile's `inferenceGatewayBaseUrl` back to its own port, silently taking the
 app off the proxy and losing both the pacing and the context tagging. The
@@ -144,6 +163,8 @@ launcher re-asserts it on every start.
 
 ```
 claude-ollama                 launch (same as `run`)
+claude-ollama status          what the proxy is doing right now (`--json` too)
+claude-ollama restart-proxy   stop the proxy and start it again on the same port
 claude-ollama config          every setting, its value and where it came from
 claude-ollama config --init   write a commented settings file
 claude-ollama config --path   print the settings file's location
@@ -165,6 +186,10 @@ cd claude-ollama
 
 Put `bin` on your `PATH` if you want the command as well. Everything resolves
 relative to the checkout, so there is nothing else to set.
+
+`make-app.sh` compiles the menu bar item with `swiftc`. Without the Xcode
+command line tools it falls back to a shell launcher that starts Claude and
+exits — same behaviour, no menu item.
 
 ## Uninstall
 

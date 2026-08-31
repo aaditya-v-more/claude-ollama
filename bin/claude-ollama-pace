@@ -19,8 +19,11 @@ streamed reply is never restarted.
 Every option also reads an environment variable, so the settings survive a
 launch from the Dock where there is nowhere to type a flag: PACE_PORT,
 PACE_UPSTREAM, PACE_LIMIT, PACE_ATTEMPTS, PACE_BASE_DELAY, PACE_MAX_DELAY,
-PACE_TIMEOUT, PACE_OLLAMA_API, PACE_EXIT_WITH_APP. A flag beats the variable,
-and the variable beats the default.
+PACE_TIMEOUT, PACE_OLLAMA_API, PACE_TAG_BUDGET, PACE_EXIT_WITH_APP. A flag
+beats the variable, and the variable beats the default.
+
+GET /__pace reports who is listening, what it is pointed at, and whether the
+context-length cache has been filled.
 """
 
 import argparse
@@ -49,7 +52,38 @@ APP_MAIN = os.path.join(CLAUDE_APP, "Contents/MacOS/Claude")
 # real window without touching either side.
 ONE_M = 1_000_000
 CTX_CACHE = {}
+CTX_PENDING = set()
 CTX_LOCK = threading.Lock()
+MISSING = object()
+
+VERSION = "1.2.0"
+
+# How long a single /api/show may take, and how long the whole catalog response
+# may spend waiting on them. The second one is the important number: Claude
+# Desktop's setup probe gives the gateway a few seconds and reports "no usable
+# models" if the catalog has not arrived, so tagging must never be what holds
+# the response up. Anything unresolved inside the budget is fetched in the
+# background and tagged on the next fetch instead.
+CTX_TIMEOUT = 5.0
+
+# Counters behind /__pace, so the menu bar item has something to show. Cheap
+# enough to keep unconditionally: three integers and a lock on a path that
+# already does network I/O.
+STATS = {"started": time.time(), "served": 0, "inflight": 0, "queued": 0,
+         "retries": 0, "giveups": 0, "last_retry": None}
+STATS_LOCK = threading.Lock()
+
+
+def bump(field, delta=1, **extra):
+    with STATS_LOCK:
+        STATS[field] += delta
+        STATS.update(extra)
+
+
+def snapshot():
+    with STATS_LOCK:
+        return dict(STATS)
+
 
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -153,7 +187,7 @@ def context_length(ollama_model, api="127.0.0.1:11434"):
     value = None
     try:
         host, _, port = api.partition(":")
-        conn = http.client.HTTPConnection(host, int(port), timeout=20)
+        conn = http.client.HTTPConnection(host, int(port), timeout=CTX_TIMEOUT)
         conn.request("POST", "/api/show",
                      body=json.dumps({"model": ollama_model}),
                      headers={"Content-Type": "application/json"})
@@ -174,7 +208,64 @@ def context_length(ollama_model, api="127.0.0.1:11434"):
     return value
 
 
-def tag_1m(payload, api):
+def cached_length(ollama_model):
+    with CTX_LOCK:
+        return CTX_CACHE.get(ollama_model, MISSING)
+
+
+def fill_async(ollama_model, api):
+    """Read a context length out of band, so the request that wanted it does not
+    have to wait. One thread per model at a time; the next fetch sees the
+    answer."""
+    with CTX_LOCK:
+        if ollama_model in CTX_CACHE or ollama_model in CTX_PENDING:
+            return
+        CTX_PENDING.add(ollama_model)
+
+    def work():
+        try:
+            context_length(ollama_model, api)
+        finally:
+            with CTX_LOCK:
+                CTX_PENDING.discard(ollama_model)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def warm_catalog(server):
+    """Read the catalog once at startup and resolve every context length in
+    parallel, so the app's first request is served from cache. Without this the
+    first catalog fetch pays for every /api/show in series and the setup probe
+    times out before the response arrives."""
+    try:
+        conn = http.client.HTTPConnection(server.up_host, server.up_port, timeout=30)
+        conn.request("GET", "/v1/models")
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        if resp.status != 200:
+            log(f"catalog warm-up: upstream returned {resp.status}")
+            server.warm = True
+            return
+        doc = json.loads(body)
+    except Exception as exc:
+        log(f"catalog warm-up failed: {exc}")
+        server.warm = True
+        return
+
+    names = {entry.get("display_name") for entry in doc.get("data") or []
+             if isinstance(entry, dict) and entry.get("display_name")}
+    threads = [threading.Thread(target=context_length, args=(name, server.ollama_api),
+                                daemon=True) for name in sorted(names)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    server.warm = True
+    log(f"context lengths cached for {len(names)} model(s); ready")
+
+
+def tag_1m(payload, api, budget):
     """Append [1m] to the id of every catalogued model whose underlying Ollama
     model actually has a 1M context window."""
     try:
@@ -185,6 +276,7 @@ def tag_1m(payload, api):
     if not isinstance(models, list):
         return payload
 
+    deadline = time.monotonic() + budget
     changed = False
     for entry in models:
         if not isinstance(entry, dict):
@@ -192,7 +284,16 @@ def tag_1m(payload, api):
         ident, backing = entry.get("id"), entry.get("display_name")
         if not ident or not backing or ident.lower().endswith("[1m]"):
             continue
-        if (context_length(backing, api) or 0) >= ONE_M:
+        length = cached_length(backing)
+        if length is MISSING:
+            if time.monotonic() >= deadline:
+                # Out of budget. Answer now with this one untagged rather than
+                # let the whole catalog miss the client's timeout.
+                fill_async(backing, api)
+                log(f"{ident} left untagged this time; still reading {backing}")
+                continue
+            length = context_length(backing, api)
+        if (length or 0) >= ONE_M:
             entry["id"] = f"{ident}[1m]"
             changed = True
             log(f"tagged {ident} as 1M ({backing})")
@@ -219,6 +320,10 @@ class Handler(BaseHTTPRequestHandler):
         if path != self.path:
             log(f"rewrote {self.path} -> {path}")
 
+        if path.partition("?")[0] == "/__pace":
+            self._identify()
+            return
+
         body = None
         length = self.headers.get("Content-Length")
         if length:
@@ -234,42 +339,88 @@ class Handler(BaseHTTPRequestHandler):
             headers["Content-Length"] = str(len(body))
 
         waited = time.monotonic()
+        bump("queued")
         with self.server.slots:
+            bump("queued", -1)
+            bump("inflight")
             queued = time.monotonic() - waited
             if queued > 0.5:
                 log(f"{path} waited {queued:.1f}s for a slot")
 
-            delay = self.server.base_delay
-            for attempt in range(1, self.server.attempts + 1):
-                conn = http.client.HTTPConnection(
-                    self.server.up_host, self.server.up_port,
-                    timeout=self.server.timeout,
-                )
-                try:
-                    conn.request(self.command, path, body=body, headers=headers)
-                    resp = conn.getresponse()
-                except Exception as exc:
-                    conn.close()
-                    if attempt == self.server.attempts:
-                        self.send_error(502, f"upstream unreachable: {exc}")
-                        return
-                    time.sleep(delay)
-                    delay = min(delay * 2, self.server.max_delay)
-                    continue
+            try:
+                self._attempt(path, body, headers)
+            finally:
+                bump("inflight", -1)
+                bump("served")
 
-                # Nothing has been streamed yet, so retrying here is safe.
-                if resp.status in RETRY_STATUS and attempt < self.server.attempts:
-                    resp.read()
-                    conn.close()
-                    pause = delay + random.uniform(0, delay * 0.25)
-                    log(f"upstream {resp.status} on {path}; "
-                        f"attempt {attempt}/{self.server.attempts}, waiting {pause:.1f}s")
-                    time.sleep(pause)
-                    delay = min(delay * 2, self.server.max_delay)
-                    continue
+    def _attempt(self, path, body, headers):
+        delay = self.server.base_delay
+        for attempt in range(1, self.server.attempts + 1):
+            conn = http.client.HTTPConnection(
+                self.server.up_host, self.server.up_port,
+                timeout=self.server.timeout,
+            )
+            try:
+                conn.request(self.command, path, body=body, headers=headers)
+                resp = conn.getresponse()
+            except Exception as exc:
+                conn.close()
+                if attempt == self.server.attempts:
+                    self.send_error(502, f"upstream unreachable: {exc}")
+                    return
+                time.sleep(delay)
+                delay = min(delay * 2, self.server.max_delay)
+                continue
 
-                self._relay(resp, conn, path)
-                return
+            # Nothing has been streamed yet, so retrying here is safe.
+            if resp.status in RETRY_STATUS and attempt < self.server.attempts:
+                resp.read()
+                conn.close()
+                bump("retries", last_retry={"status": resp.status,
+                                            "at": time.time(), "path": path})
+                pause = delay + random.uniform(0, delay * 0.25)
+                log(f"upstream {resp.status} on {path}; "
+                    f"attempt {attempt}/{self.server.attempts}, waiting {pause:.1f}s")
+                time.sleep(pause)
+                delay = min(delay * 2, self.server.max_delay)
+                continue
+
+            self._relay(resp, conn, path)
+            return
+
+    def _identify(self):
+        """Say who is listening here, and how it is doing. The launcher uses
+        this to tell its own proxy from whatever else might have taken the port
+        and to wait until the context lengths are cached; the menu bar item
+        polls it for everything it displays."""
+        state = snapshot()
+        state.update({
+            "proxy": "claude-ollama-pace",
+            "version": VERSION,
+            "port": self.server.server_address[1],
+            "upstream": f"{self.server.up_host}:{self.server.up_port}",
+            "limit": self.server.limit,
+            "attempts": self.server.attempts,
+            "max_delay": self.server.max_delay,
+            "warm": bool(getattr(self.server, "warm", False)),
+            "models": self._catalog_summary(),
+        })
+        payload = json.dumps(state).encode()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _catalog_summary(self):
+        """What the context-length cache knows, for the status menu."""
+        with CTX_LOCK:
+            return [{"model": name, "context": value}
+                    for name, value in sorted(CTX_CACHE.items())]
 
     def _untag_model(self, body):
         """Drop a trailing [1m] from the requested model. The app strips this
@@ -296,7 +447,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         if path.startswith("/v1/models") and resp.status == 200:
             try:
-                payload = tag_1m(resp.read(), self.server.ollama_api)
+                payload = tag_1m(resp.read(), self.server.ollama_api,
+                                 self.server.tag_budget)
                 self.send_response(200)
                 for key, value in resp.getheaders():
                     if key.lower() not in HOP_BY_HOP:
@@ -319,6 +471,7 @@ class Handler(BaseHTTPRequestHandler):
             if resp.status in RETRY_STATUS:
                 # Give the client a real number to back off on.
                 self.send_header("Retry-After", str(self.server.max_delay))
+                bump("giveups")
                 log(f"giving up on {self.path} with {resp.status}")
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
@@ -359,6 +512,10 @@ def main():
                     default=env_num("PACE_TIMEOUT", 1800.0, float))
     ap.add_argument("--ollama-api", default=env_str("PACE_OLLAMA_API", "127.0.0.1:11434"),
                     help="Ollama's own API, used to read real context lengths")
+    ap.add_argument("--tag-budget", type=float,
+                    default=env_num("PACE_TAG_BUDGET", 2.0, float),
+                    help="seconds a catalog response may spend resolving "
+                         "context lengths before answering without them")
     ap.add_argument("--exit-with-app", action="store_true",
                     default=env_flag("PACE_EXIT_WITH_APP", False),
                     help="shut down once Claude Desktop quits")
@@ -374,7 +531,10 @@ def main():
     server.daemon_threads = True
     server.slots = threading.Semaphore(args.limit)
     server.up_host, server.up_port = host, int(port)
+    server.limit = args.limit
     server.attempts = args.attempts
+    server.tag_budget = args.tag_budget
+    server.warm = False
     server.base_delay = args.base_delay
     server.max_delay = args.max_delay
     server.timeout = args.timeout
@@ -383,6 +543,8 @@ def main():
     log(f"listening on 127.0.0.1:{args.port} -> {args.upstream} "
         f"(limit {args.limit}, {args.attempts} attempts, "
         f"{args.base_delay:g}s doubling to {args.max_delay:g}s)")
+
+    threading.Thread(target=warm_catalog, args=(server,), daemon=True).start()
 
     if args.exit_with_app:
         threading.Thread(target=watch_app, daemon=True).start()

@@ -20,13 +20,28 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 
 cp "$here/app/Info.plist" "$bundle/Contents/Info.plist"
 cp "$here/app/icon.icns" "$bundle/Contents/Resources/icon.icns"
-cp "$here/app/launch" "$bundle/Contents/MacOS/launch"
-chmod 755 "$bundle/Contents/MacOS/launch"
 
-if [ -n "$wrapper" ]; then
+# The real executable is a small accessory app that starts Claude and then sits
+# in the menu bar showing what the proxy is doing. Where there is no Swift
+# compiler — a checkout on a machine without the Xcode tools — the shell script
+# stands in: it starts Claude the same way and exits, without the menu item.
+if command -v swiftc >/dev/null 2>&1; then
+  swiftc -O -target "$(uname -m)-apple-macos11" \
+    -o "$bundle/Contents/MacOS/ClaudeOllama" "$here/app/StatusItem.swift"
+  # arm64 refuses to run an unsigned binary at all, and the cask clears the
+  # quarantine attribute rather than pretending this is notarised.
+  codesign --force --sign - "$bundle" >/dev/null 2>&1 || true
+  built=menu-bar
+else
+  cp "$here/app/launch" "$bundle/Contents/MacOS/ClaudeOllama"
+  built=shell
+fi
+chmod 755 "$bundle/Contents/MacOS/ClaudeOllama"
+
+if [ -n "$wrapper" ] && [ "$built" = shell ]; then
   # A literal replacement, so a prefix containing regex metacharacters — which
   # a Homebrew prefix on an unusual path can — is still substituted correctly.
-  python3 - "$bundle/Contents/MacOS/launch" "$wrapper" <<'PY'
+  python3 - "$bundle/Contents/MacOS/ClaudeOllama" "$wrapper" <<'PY'
 import sys
 path, wrapper = sys.argv[1], sys.argv[2]
 with open(path) as handle:
@@ -37,3 +52,4 @@ PY
 fi
 
 echo "$bundle"
+[ "$built" = shell ] && echo "note: built without the menu bar item (no swiftc)" >&2

@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 # ---------------------------------------------------------------- locations --
 
@@ -50,7 +50,8 @@ CONFIG="${CLAUDE_OLLAMA_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-ollama/
 # as a setting that silently does nothing.
 KNOWN="CLAUDE_APP RETRIES SUBAGENTS TIMEOUT_MS CLASSIFIER CONTEXT_TOKENS COMPACT
 GATEWAY_PORT PACE_UPSTREAM PACE_PORT PACE_LIMIT PACE_ATTEMPTS PACE_BASE_DELAY
-PACE_MAX_DELAY PACE_TIMEOUT PACE_OLLAMA_API PACE_EXIT_WITH_APP PACE_LOG"
+PACE_MAX_DELAY PACE_TIMEOUT PACE_OLLAMA_API PACE_TAG_BUDGET
+PACE_EXIT_WITH_APP PACE_LOG"
 # Collapse to one space-separated line. Membership is tested with a `case` glob
 # on " $KNOWN ", which only matches names bounded by spaces — a name that
 # happened to start a line would be rejected as unknown.
@@ -133,6 +134,10 @@ PACE_PORT="${PACE_PORT:-11436}"
 PACE_LIMIT="${PACE_LIMIT:-3}"
 PACE_LOG="${PACE_LOG:-$HOME/.local/state/claude-ollama-pace.log}"
 PACE_EXIT_WITH_APP="${PACE_EXIT_WITH_APP:-on}"
+# The port actually in use, recorded next to the log. A launch may have had to
+# move off PACE_PORT, and `status` — and the menu bar item behind it — has no
+# other way to know where the proxy ended up.
+PORT_FILE="$(dirname "$PACE_LOG")/claude-ollama-pace.port"
 
 # The proxy reads every one of its settings from the environment, so exporting
 # the resolved values is the whole of the handover — nothing has to be mirrored
@@ -187,12 +192,69 @@ app_running() {
   [ "${n:-0}" -gt 0 ]
 }
 
+# The proxy answers /__pace with its own name, so a port that is merely busy can
+# be told apart from one this tool is already using.
+pace_health() { curl -sf -m 2 "http://127.0.0.1:$1/__pace" 2>/dev/null; }
+is_our_proxy() { pace_health "$1" | grep -q '"proxy": *"claude-ollama-pace"'; }
+
+# First free port at or above the one given. Used when something else already
+# holds the configured port — the profile's endpoint is rewritten to match, so
+# moving is invisible from the app's side.
+pick_port() {
+  python3 - "$1" <<'PORTSCAN'
+import socket, sys
+
+start = int(sys.argv[1])
+for port in range(start, start + 64):
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+    print(port)
+    break
+PORTSCAN
+}
+
+# The catalog cannot be tagged until every model's real context length has been
+# read from Ollama, and Claude Desktop's setup probe gives the gateway only a
+# few seconds before reporting "no usable models". Waiting here, rather than
+# letting the app's first request pay for it, is what keeps that probe inside
+# its budget.
+wait_warm() {
+  local port=$1 waited=0
+  pace_health "$port" | grep -q '"warm": *true' && return 0
+  while [ "$waited" -lt 32 ]; do
+    sleep 0.25
+    waited=$((waited + 1))
+    if pace_health "$port" | grep -q '"warm": *true'; then
+      echo "Model context lengths cached."
+      return 0
+    fi
+  done
+  echo "Warning: the proxy is still reading model context lengths; the app may" >&2
+  echo "report no usable models on this launch. See $PACE_LOG" >&2
+}
+
 start_pace() {
   # The pacing proxy holds requests to PACE_LIMIT in flight and retries upstream
   # 429/529s with a growing delay, so the gateway is never the thing that has to
   # say no. Claude Desktop's endpoint points at this port, not the gateway's.
   [ -x "$PACE" ] || return 0
-  listening "$PACE_PORT" && return 0
+
+  if listening "$PACE_PORT"; then
+    if is_our_proxy "$PACE_PORT"; then
+      printf %s "$PACE_PORT" > "$PORT_FILE" 2>/dev/null || true
+      wait_warm "$PACE_PORT"
+      return 0
+    fi
+    local alt
+    alt=$(pick_port "$((PACE_PORT + 1))")
+    [ -n "$alt" ] || die "Port $PACE_PORT is taken and nothing near it is free."
+    echo "Port $PACE_PORT is in use by something else; using $alt instead."
+    PACE_PORT=$alt
+    export PACE_PORT
+  fi
 
   local exit_flag=--exit-with-app
   off "$PACE_EXIT_WITH_APP" && exit_flag=--no-exit-with-app
@@ -204,7 +266,9 @@ start_pace() {
     sleep 0.3
   done
   if listening "$PACE_PORT"; then
+    printf %s "$PACE_PORT" > "$PORT_FILE" 2>/dev/null || true
     echo "Pacing proxy up on 127.0.0.1:$PACE_PORT (limit $PACE_LIMIT)."
+    wait_warm "$PACE_PORT"
   else
     echo "Warning: pacing proxy failed to start; see $PACE_LOG" >&2
   fi
@@ -294,6 +358,22 @@ cmd_pace() {
   # No flags of our own: the settings are already in the environment, and
   # anything passed here beats them.
   exec "$PACE" "$@"
+}
+
+cmd_restart_proxy() {
+  # Killing first frees the port, so the replacement almost always comes back on
+  # the same one — which matters, because a Claude instance that is already
+  # running read its endpoint at startup and will not read it again.
+  if pgrep -f "claude-ollama-pace" >/dev/null 2>&1; then
+    pkill -f "claude-ollama-pace" 2>/dev/null || true
+    local waited=0
+    while listening "$PACE_PORT" && [ "$waited" -lt 20 ]; do
+      sleep 0.25
+      waited=$((waited + 1))
+    done
+  fi
+  start_pace
+  point_at_proxy
 }
 
 cmd_install_app() {
@@ -400,6 +480,7 @@ setting() {
     PACE_MAX_DELAY)      echo "${PACE_MAX_DELAY:-30.0}" ;;
     PACE_TIMEOUT)        echo "${PACE_TIMEOUT:-1800.0}" ;;
     PACE_OLLAMA_API)     echo "${PACE_OLLAMA_API:-127.0.0.1:11434}" ;;
+    PACE_TAG_BUDGET)     echo "${PACE_TAG_BUDGET:-2.0}" ;;
     PACE_EXIT_WITH_APP)  echo "$PACE_EXIT_WITH_APP" ;;
     PACE_LOG)            echo "$PACE_LOG" ;;
   esac
@@ -444,7 +525,14 @@ cmd_doctor() {
   fi
 
   if listening "$PACE_PORT"; then
-    printf '  ok    %-22s %s\n' "proxy listening" "127.0.0.1:$PACE_PORT"
+    if is_our_proxy "$PACE_PORT"; then
+      local warm="cold"
+      pace_health "$PACE_PORT" | grep -q '"warm": *true' && warm="context lengths cached"
+      printf '  ok    %-22s %s\n' "proxy listening" "127.0.0.1:$PACE_PORT ($warm)"
+    else
+      check "proxy listening" no \
+        "127.0.0.1:$PACE_PORT held by something else; a launch will move to the next free port"
+    fi
   else
     printf '  --    %-22s %s\n' "proxy listening" \
       "not running (started on demand by \`claude-ollama run\`)"
@@ -471,6 +559,81 @@ cmd_doctor() {
 
 cmd_env() { overrides; }
 
+# Where the proxy actually is: the port a launch recorded, else the configured
+# one. Verified in both cases, so a stale file never reports a dead proxy as up.
+effective_port() {
+  local recorded
+  if [ -r "$PORT_FILE" ]; then
+    recorded=$(cat "$PORT_FILE" 2>/dev/null || true)
+    if [ -n "$recorded" ] && is_our_proxy "$recorded"; then
+      echo "$recorded"
+      return 0
+    fi
+  fi
+  if is_our_proxy "$PACE_PORT"; then
+    echo "$PACE_PORT"
+    return 0
+  fi
+  return 1
+}
+
+cmd_status() {
+  local port health
+  if port=$(effective_port); then
+    health=$(pace_health "$port")
+  else
+    health=""
+  fi
+
+  if [ "${1:-}" = "--json" ]; then
+    # One object either way, so the caller never has to special-case a proxy
+    # that is not running.
+    CO_HEALTH="$health" CO_APP="$APP" CO_LOG="$PACE_LOG" CO_CONFIG="$CONFIG"     CO_RUNNING=$(app_running && echo true || echo false)     python3 - <<'STATUS_JSON'
+import json, os
+
+health = os.environ.get("CO_HEALTH") or ""
+try:
+    proxy = json.loads(health)
+except ValueError:
+    proxy = None
+
+print(json.dumps({
+    "proxy": proxy,
+    "claudeRunning": os.environ["CO_RUNNING"] == "true",
+    "claudeApp": os.environ["CO_APP"],
+    "log": os.environ["CO_LOG"],
+    "config": os.environ["CO_CONFIG"],
+}))
+STATUS_JSON
+    return
+  fi
+
+  if [ -z "$health" ]; then
+    echo "Pacing proxy: not running"
+    echo "Claude Desktop: $(app_running && echo "running on the Ollama profile" || echo "not running")"
+    return 1
+  fi
+
+  CO_HEALTH="$health" python3 - <<'STATUS_TEXT'
+import json, os, time
+
+d = json.loads(os.environ["CO_HEALTH"])
+up = int(time.time() - d["started"])
+print(f"Pacing proxy: 127.0.0.1:{d['port']} -> {d['upstream']}")
+print(f"  up {up // 3600}h{up % 3600 // 60:02d}m, "
+      f"{d['inflight']} in flight of {d['limit']}, {d['queued']} queued")
+print(f"  {d['served']} served, {d['retries']} retried, {d['giveups']} gave up")
+last = d.get("last_retry")
+if last:
+    when = time.strftime("%H:%M:%S", time.localtime(last["at"]))
+    print(f"  last retry {last['status']} on {last['path']} at {when}")
+tagged = [m for m in d.get("models", []) if (m.get("context") or 0) >= 1_000_000]
+print(f"  {len(tagged)} of {len(d.get('models', []))} models tagged 1M"
+      if d["warm"] else "  still reading model context lengths")
+STATUS_TEXT
+  echo "Claude Desktop: $(app_running && echo "running on the Ollama profile" || echo "not running")"
+}
+
 usage() {
   cat <<EOF
 Claude Desktop on the local Ollama gateway — environment overrides and a
@@ -482,9 +645,11 @@ Usage: claude-ollama [command]
   config         Show every setting, its value and where it came from
   config --init  Write a commented settings file
   config --path  Print the settings file's location
+  status         Report what the proxy is doing right now
   doctor         Check the gateway, proxy, bundle and profile
   env            Print the overrides \`run\` hands to Claude Desktop
   pace [args]    Run the pacing proxy in the foreground
+  restart-proxy  Stop the proxy and start it again on the same port
   install-app    Link "Claude (Ollama).app" into ~/Applications
   uninstall-app  Remove that link
   version        Print the version
@@ -500,8 +665,10 @@ case "${1:-run}" in
   run)            shift || true; cmd_run ;;
   pace)           shift; cmd_pace "$@" ;;
   config)         shift; cmd_config "${1:-}" ;;
+  restart-proxy)  cmd_restart_proxy ;;
   install-app)    cmd_install_app ;;
   uninstall-app)  cmd_uninstall_app ;;
+  status)         shift; cmd_status "${1:-}" ;;
   doctor)         cmd_doctor ;;
   env)            cmd_env ;;
   version|--version|-V) echo "claude-ollama $VERSION" ;;
