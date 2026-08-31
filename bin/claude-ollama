@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# Run Claude Desktop against the local Ollama gateway with the tuning supplied
+# as process environment only. Nothing on disk is modified — quit the app and
+# the settings are gone.
+#
+# Ollama Cloud serves a small fixed number of requests concurrently and queues
+# the rest; overflowing that queue is what produces the 529s. Everything below
+# either keeps the number of in-flight requests down or waits longer before
+# giving up.
+#
+# Override any value for a single launch:
+#   SUBAGENTS=2 RETRIES=40 claude-ollama
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# ---------------------------------------------------------------- locations --
+
+# Follow symlinks so the Homebrew shim in bin resolves back to the Cellar, where
+# the proxy and the app bundle sit alongside this script.
+self=${BASH_SOURCE[0]}
+while [ -L "$self" ]; do
+  dir=$(cd -P -- "$(dirname -- "$self")" && pwd)
+  self=$(readlink -- "$self")
+  case $self in /*) ;; *) self="$dir/$self" ;; esac
+done
+BIN_DIR=$(cd -P -- "$(dirname -- "$self")" && pwd)
+PREFIX=$(cd -P -- "$BIN_DIR/.." && pwd)
+
+# Baked in at install time. The versioned Cellar path moves on every upgrade,
+# so anything long-lived — the ~/Applications link in particular — has to point
+# at the stable opt prefix instead.
+OPT_PREFIX="@@OPT_PREFIX@@"
+case $OPT_PREFIX in "@@"*) OPT_PREFIX="$PREFIX" ;; esac
+
+PACE="${CLAUDE_OLLAMA_PACE:-$BIN_DIR/claude-ollama-pace}"
+BUNDLE_NAME="Claude (Ollama).app"
+BUNDLE="$OPT_PREFIX/$BUNDLE_NAME"
+[ -d "$BUNDLE" ] || BUNDLE="$PREFIX/$BUNDLE_NAME"
+LINK="$HOME/Applications/$BUNDLE_NAME"
+
+# ------------------------------------------------------------------ tunables --
+
+APP="${CLAUDE_APP:-/Applications/Claude.app}"
+PROFILE="${CLAUDE_OLLAMA_PROFILE:-$HOME/Library/Application Support/Claude-3p}"
+
+# Claude Code clamps this to 15 for non-Anthropic endpoints (the default there
+# is 10), and logs a warning if you ask for more, so 15 is the real ceiling.
+# The pacing proxy's own retries sit underneath this anyway.
+RETRIES="${RETRIES:-15}"
+SUBAGENTS="${SUBAGENTS:-3}"
+TIMEOUT_MS="${TIMEOUT_MS:-1800000}"
+# Auto mode is not used here, so this only feeds the background classifier.
+# Tool fan-out is left at the stock 10: local reads and greps cost the gateway
+# nothing, and the only tool in that group that does — Agent — is already
+# bounded by SUBAGENTS.
+CLASSIFIER="${CLASSIFIER:-claude-haiku-4-5-20251001}"
+
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS is only honoured for models whose name does not
+# start with "claude-", and every Ollama alias does, so on its own this is
+# ignored and the window falls back to 200000. The proxy is what actually fixes
+# it, by tagging the catalog with [1m]; this stays set for the models the proxy
+# leaves untagged. Drop it to 262144 if you make a model that genuinely stops
+# there your main one.
+CONTEXT_TOKENS="${CONTEXT_TOKENS:-1048576}"
+
+# DISABLE_COMPACT is the other way to force the override through, but it costs
+# auto-compaction: long sessions stop rather than compacting themselves. The
+# [1m] tagging gets the same window with compaction intact, so this stays off.
+# Set COMPACT=off to force it on anyway.
+COMPACT="${COMPACT:-on}"
+
+GATEWAY_PORT="${GATEWAY_PORT:-11435}"
+PACE_PORT="${PACE_PORT:-11436}"
+PACE_LIMIT="${PACE_LIMIT:-3}"
+PACE_LOG="${PACE_LOG:-$HOME/.local/state/claude-ollama-pace.log}"
+
+# ------------------------------------------------------------------- helpers --
+
+die() { echo "$*" >&2; exit 1; }
+
+# lsof rather than bash's /dev/tcp, so the check does not depend on the shell
+# this ends up being run under.
+listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+# An app's environment is fixed at launch, so --env only reaches a new instance.
+# A Claude process with no --user-data-dir argument is one launched on the 3p
+# profile; running a second copy on the same profile risks clobbering state.
+# pgrep -f sees a truncated command line on macOS and misses these, so read the
+# process table directly.
+app_running() {
+  local n
+  n=$(ps -axo command= 2>/dev/null \
+    | grep -E "^${APP//./\\.}/Contents/MacOS/Claude" \
+    | grep -vc -- '--user-data-dir' || true)
+  [ "${n:-0}" -gt 0 ]
+}
+
+start_pace() {
+  # The pacing proxy holds requests to PACE_LIMIT in flight and retries upstream
+  # 429/529s with a growing delay, so the gateway is never the thing that has to
+  # say no. Claude Desktop's endpoint points at this port, not the gateway's.
+  [ -x "$PACE" ] || return 0
+  listening "$PACE_PORT" && return 0
+
+  mkdir -p "$(dirname "$PACE_LOG")"
+  nohup "$PACE" --port "$PACE_PORT" --upstream "127.0.0.1:$GATEWAY_PORT" \
+    --limit "$PACE_LIMIT" --exit-with-app >>"$PACE_LOG" 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    listening "$PACE_PORT" && break
+    sleep 0.3
+  done
+  if listening "$PACE_PORT"; then
+    echo "Pacing proxy up on 127.0.0.1:$PACE_PORT (limit $PACE_LIMIT)."
+  else
+    echo "Warning: pacing proxy failed to start; see $PACE_LOG" >&2
+  fi
+}
+
+point_at_proxy() {
+  # Ollama rewrites the profile's gateway config whenever its own settings UI is
+  # opened, resetting the endpoint to its port and quietly taking the app off the
+  # proxy — which loses both the pacing and the [1m] context tagging at once. The
+  # app reads this at startup, so re-assert it on every launch.
+  listening "$PACE_PORT" || return 0
+  python3 - "$PROFILE/configLibrary" "http://127.0.0.1:$PACE_PORT" <<'PY' || true
+import glob, json, os, sys
+
+folder, url = sys.argv[1], sys.argv[2]
+for path in glob.glob(os.path.join(folder, "*.json")):
+    try:
+        with open(path) as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError):
+        continue
+    if not isinstance(doc, dict) or "inferenceGatewayBaseUrl" not in doc:
+        continue
+    if doc["inferenceGatewayBaseUrl"] == url:
+        continue
+    was = doc["inferenceGatewayBaseUrl"]
+    doc["inferenceGatewayBaseUrl"] = url
+    tmp = path + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(doc, handle, indent=2)
+        handle.write("\n")
+    os.replace(tmp, path)
+    print(f"Endpoint re-pointed at the proxy ({was} -> {url}).")
+PY
+}
+
+# The set of overrides, as NAME=VALUE lines. `run` turns these into --env
+# arguments and `env` just prints them, so the two can never drift apart.
+overrides() {
+  [ "$COMPACT" = "on" ] || echo "DISABLE_COMPACT=1"
+  cat <<EOF
+CLAUDE_USER_DATA_DIR=$PROFILE
+CLAUDE_CODE_MAX_RETRIES=$RETRIES
+CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=$SUBAGENTS
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+API_TIMEOUT_MS=$TIMEOUT_MS
+CLAUDE_STREAM_IDLE_TIMEOUT_MS=$TIMEOUT_MS
+CLAUDE_CODE_BG_CLASSIFIER_MODEL=$CLASSIFIER
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=$CONTEXT_TOKENS
+CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+EOF
+}
+
+# ------------------------------------------------------------------ commands --
+
+cmd_run() {
+  [ -d "$APP" ] || die "Claude.app not found at $APP"
+
+  if ! curl -sf -m 5 -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/v1/models"; then
+    echo "Warning: the Ollama gateway on 127.0.0.1:$GATEWAY_PORT is not responding." >&2
+    echo "Start Ollama.app first, or the app will have nothing to talk to." >&2
+  fi
+
+  start_pace
+
+  if app_running; then
+    echo "A Claude instance is already running on the Ollama profile." >&2
+    die "Quit it first — an already-running app ignores these variables."
+  fi
+
+  point_at_proxy
+
+  # ${a[@]+"${a[@]}"} rather than "${a[@]}": macOS ships bash 3.2, where
+  # expanding an empty array under `set -u` is an unbound-variable error.
+  local args=()
+  while IFS= read -r line; do
+    args+=(--env "$line")
+  done < <(overrides)
+
+  open -na "$APP" ${args[@]+"${args[@]}"}
+}
+
+cmd_pace() {
+  [ -x "$PACE" ] || die "Pacing proxy not found at $PACE"
+  exec "$PACE" --port "$PACE_PORT" --upstream "127.0.0.1:$GATEWAY_PORT" \
+    --limit "$PACE_LIMIT" "$@"
+}
+
+cmd_install_app() {
+  [ -d "$BUNDLE" ] || die "App bundle not found at $BUNDLE"
+  mkdir -p "$HOME/Applications"
+
+  if [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    # Only ever replace a link this command made. A real bundle sitting there is
+    # somebody's earlier hand-rolled copy, and deleting it silently would be a
+    # surprise.
+    if [ ! -L "$LINK" ]; then
+      echo "$LINK already exists and is not a link." >&2
+      die "Move it aside first, then run this again."
+    fi
+    rm "$LINK"
+  fi
+
+  ln -s "$BUNDLE" "$LINK"
+  # LaunchServices caches bundle metadata by path; without this the Dock and
+  # Spotlight can go on showing a stale icon or name after a reinstall.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$LINK" >/dev/null 2>&1 || true
+
+  echo "Linked $LINK"
+  echo "  -> $BUNDLE"
+}
+
+cmd_uninstall_app() {
+  if [ -L "$LINK" ]; then
+    rm "$LINK"
+    echo "Removed $LINK"
+  elif [ -e "$LINK" ]; then
+    echo "$LINK is not a link; leaving it alone." >&2
+    return 1
+  else
+    echo "Nothing linked at $LINK"
+  fi
+}
+
+check() {  # check <label> <ok?> <detail>
+  if [ "$2" = "yes" ]; then
+    printf '  ok    %-22s %s\n' "$1" "$3"
+  else
+    printf '  FAIL  %-22s %s\n' "$1" "$3"
+    DOCTOR_FAILED=1
+  fi
+}
+
+cmd_doctor() {
+  DOCTOR_FAILED=0
+  echo "claude-ollama $VERSION"
+  echo "  prefix: $PREFIX"
+  echo
+
+  [ -d "$APP" ] && check "Claude Desktop" yes "$APP" \
+                || check "Claude Desktop" no "not found at $APP"
+
+  command -v python3 >/dev/null 2>&1 \
+    && check "python3" yes "$(python3 -V 2>&1)" \
+    || check "python3" no "not on PATH; the proxy needs it"
+
+  [ -x "$PACE" ] && check "pacing proxy" yes "$PACE" \
+                 || check "pacing proxy" no "not executable at $PACE"
+
+  [ -d "$BUNDLE" ] && check "app bundle" yes "$BUNDLE" \
+                   || check "app bundle" no "not found at $BUNDLE"
+
+  if [ -L "$LINK" ]; then
+    check "~/Applications link" yes "-> $(readlink "$LINK")"
+  else
+    check "~/Applications link" no "run: claude-ollama install-app"
+  fi
+
+  if curl -sf -m 5 -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/v1/models"; then
+    check "Ollama gateway" yes "127.0.0.1:$GATEWAY_PORT"
+  else
+    check "Ollama gateway" no "127.0.0.1:$GATEWAY_PORT not answering; start Ollama.app"
+  fi
+
+  if listening "$PACE_PORT"; then
+    printf '  ok    %-22s %s\n' "proxy listening" "127.0.0.1:$PACE_PORT"
+  else
+    printf '  --    %-22s %s\n' "proxy listening" \
+      "not running (started on demand by \`claude-ollama run\`)"
+  fi
+
+  if [ -d "$PROFILE" ]; then
+    printf '  ok    %-22s %s\n' "profile" "$PROFILE"
+  else
+    printf '  --    %-22s %s\n' "profile" "$PROFILE (created on first launch)"
+  fi
+
+  echo
+  [ "$DOCTOR_FAILED" = 0 ] || return 1
+}
+
+cmd_env() { overrides; }
+
+usage() {
+  cat <<EOF
+Claude Desktop on the local Ollama gateway — environment overrides and a
+pacing proxy, with nothing written to the app's own settings.
+
+Usage: claude-ollama [command]
+
+  run            Launch Claude Desktop with the overrides applied (default)
+  install-app    Link "Claude (Ollama).app" into ~/Applications
+  uninstall-app  Remove that link
+  doctor         Check the gateway, proxy, bundle and profile
+  env            Print the overrides \`run\` would apply
+  pace [args]    Run the pacing proxy in the foreground
+  version        Print the version
+
+Environment: RETRIES SUBAGENTS TIMEOUT_MS CLASSIFIER CONTEXT_TOKENS COMPACT
+             GATEWAY_PORT PACE_PORT PACE_LIMIT PACE_LOG CLAUDE_APP
+EOF
+}
+
+case "${1:-run}" in
+  run)            shift || true; cmd_run ;;
+  pace)           shift; cmd_pace "$@" ;;
+  install-app)    cmd_install_app ;;
+  uninstall-app)  cmd_uninstall_app ;;
+  doctor)         cmd_doctor ;;
+  env)            cmd_env ;;
+  version|--version|-V) echo "claude-ollama $VERSION" ;;
+  help|--help|-h) usage ;;
+  *)              usage >&2; exit 2 ;;
+esac

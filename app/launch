@@ -1,0 +1,61 @@
+#!/bin/bash
+# Bundle executable for "Claude (Ollama).app". Delegates to the claude-ollama
+# wrapper, which supplies the tuning as environment only.
+#
+# LaunchServices gives this process a bare environment, so nothing here may rely
+# on the login shell's PATH, and failures must be shown in a dialog because
+# there is no terminal to print to.
+
+alert() {
+  /usr/bin/osascript - "$1" <<'OSA' >/dev/null 2>&1
+on run argv
+	display dialog (item 1 of argv) with title "Claude (Ollama)" ¬
+		buttons {"OK"} default button "OK" with icon caution
+end run
+OSA
+}
+
+# .../Claude (Ollama).app/Contents/MacOS/launch -> the directory holding the
+# bundle. Symlinks are followed, so a bundle linked into ~/Applications still
+# finds the copy of the wrapper it was installed alongside.
+self=${BASH_SOURCE[0]}
+while [ -L "$self" ]; do
+  dir=$(cd -P -- "$(dirname -- "$self")" && pwd)
+  self=$(readlink -- "$self")
+  case $self in /*) ;; *) self="$dir/$self" ;; esac
+done
+bundle_parent=$(cd -P -- "$(dirname -- "$self")/../../.." && pwd)
+
+# In order: an explicit override, the copy installed next to this bundle, the
+# path baked in at install time, then the usual Homebrew prefixes.
+for candidate in \
+  "${CLAUDE_OLLAMA_BIN:-}" \
+  "$bundle_parent/bin/claude-ollama" \
+  "@@WRAPPER@@" \
+  /opt/homebrew/bin/claude-ollama \
+  /usr/local/bin/claude-ollama
+do
+  [ -n "$candidate" ] || continue
+  case $candidate in "@@"*) continue ;; esac
+  if [ -x "$candidate" ]; then
+    wrapper=$candidate
+    break
+  fi
+done
+
+if [ -z "${wrapper:-}" ]; then
+  alert "Could not find the claude-ollama launcher.
+
+Reinstall it with:
+    brew install aaditya-v-more/claude-ollama/claude-ollama"
+  exit 1
+fi
+
+if ! output=$("$wrapper" run 2>&1); then
+  alert "Could not start Claude on the Ollama gateway.
+
+${output:-The launcher exited without a message.}"
+  exit 1
+fi
+
+exit 0

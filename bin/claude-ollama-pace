@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""Pacing proxy between Claude Desktop and Ollama's Claude gateway.
+
+Ollama Cloud serves a fixed number of requests at once and 529s the overflow,
+without a Retry-After header — so Claude Code cannot pace itself and just
+retries blindly until it gives up. This sits in front and does two things:
+
+  1. Holds in-flight requests to LIMIT with a semaphore. Excess requests wait
+     in line here instead of being rejected upstream, so the 529 never happens.
+  2. If upstream still returns 429/529, retries internally with an increasing
+     delay, and attaches a Retry-After header if it eventually gives up, so the
+     client backs off on a real number instead of guessing.
+
+Retries only ever happen before the first response byte, so a partially
+streamed reply is never restarted.
+
+  claude-ollama-pace [--port 11436] [--upstream 127.0.0.1:11435] [--limit 3]
+"""
+
+import argparse
+import http.client
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# The Ollama-profile instance is the one launched with CLAUDE_USER_DATA_DIR in
+# its environment rather than a --user-data-dir argument, so it is identified by
+# the absence of that flag.
+CLAUDE_APP = os.environ.get("CLAUDE_APP", "/Applications/Claude.app")
+APP_MAIN = os.path.join(CLAUDE_APP, "Contents/MacOS/Claude")
+
+# Claude Desktop decides a model has a 1M window by matching /-1m\b|\[1m\]/i
+# against the model ID, and strips a trailing [1m] before sending the request
+# on to the provider. Ollama's gateway never sets that marker, and reports
+# max_tokens copied from the real Anthropic models (64000 for claude-opus-5),
+# so the app falls back to its 200k default. Tagging the catalog here gets the
+# real window without touching either side.
+ONE_M = 1_000_000
+CTX_CACHE = {}
+CTX_LOCK = threading.Lock()
+
+HOP_BY_HOP = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "content-length",
+}
+# The gateway guards against DNS rebinding: it 403s any request carrying an
+# Origin header, or a Host that isn't its own address. Both have to be rewritten
+# on the way through or every proxied request comes back "forbidden".
+STRIP = HOP_BY_HOP | {"host", "origin", "referer"}
+RETRY_STATUS = {429, 529, 503}
+
+
+def log(msg):
+    print(f"[pace] {time.strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
+
+
+def app_running():
+    """Whether the Ollama-profile Claude Desktop is up.
+
+    Errs towards True: a failed read must never be what shuts the proxy down.
+    """
+    try:
+        out = subprocess.run(["ps", "-axo", "command="], capture_output=True,
+                             text=True, timeout=10).stdout
+    except Exception:
+        return True
+    return any(line.startswith(APP_MAIN) and "--user-data-dir" not in line
+               for line in out.splitlines())
+
+
+def watch_app(grace=5.0, appear_timeout=90.0):
+    """Exit once Claude Desktop has quit.
+
+    Supervising from in here rather than from a shell watchdog in the launcher:
+    that watchdog shared the launcher's process group and was reaped the moment
+    the launcher exited, so it never survived to do the job. This process is
+    already detached and long-lived, which makes it the right place for it.
+    """
+    deadline = time.monotonic() + appear_timeout
+    while time.monotonic() < deadline and not app_running():
+        time.sleep(0.5)
+
+    while True:
+        if app_running():
+            time.sleep(5)
+            continue
+        # Confirm after a grace period, so quitting and relaunching straight
+        # away does not take the proxy down under the new window.
+        time.sleep(grace)
+        if app_running():
+            continue
+        log("Claude Desktop has quit; shutting down")
+        sys.stderr.flush()
+        os._exit(0)
+
+
+def normalise(path):
+    """Collapse duplicate slashes in the path, leaving the query string alone.
+
+    Claude Desktop's setup probe joins its stored base URL with "/v1/models"
+    without trimming, so it asks for "//v1/models". The gateway's router is an
+    exact-match one and 404s that, which the app reports as "gateway returned no
+    usable models" even though inference itself works. Fixing it here is the
+    only place we can reach.
+    """
+    head, sep, tail = path.partition("?")
+    return re.sub(r"/{2,}", "/", head) + sep + tail
+
+
+def context_length(ollama_model, api="127.0.0.1:11434"):
+    """Real context window of an Ollama model, via /api/show. Cached, and None
+    if it cannot be determined — callers must treat that as "leave it alone"."""
+    with CTX_LOCK:
+        if ollama_model in CTX_CACHE:
+            return CTX_CACHE[ollama_model]
+    value = None
+    try:
+        host, _, port = api.partition(":")
+        conn = http.client.HTTPConnection(host, int(port), timeout=20)
+        conn.request("POST", "/api/show",
+                     body=json.dumps({"model": ollama_model}),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        if resp.status == 200:
+            info = json.loads(resp.read()).get("model_info") or {}
+            for key, val in info.items():
+                if key.endswith(".context_length") and isinstance(val, int):
+                    value = val
+                    break
+        else:
+            resp.read()
+        conn.close()
+    except Exception as exc:
+        log(f"could not read context length for {ollama_model}: {exc}")
+    with CTX_LOCK:
+        CTX_CACHE[ollama_model] = value
+    return value
+
+
+def tag_1m(payload, api):
+    """Append [1m] to the id of every catalogued model whose underlying Ollama
+    model actually has a 1M context window."""
+    try:
+        doc = json.loads(payload)
+    except (ValueError, TypeError):
+        return payload
+    models = doc.get("data")
+    if not isinstance(models, list):
+        return payload
+
+    changed = False
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        ident, backing = entry.get("id"), entry.get("display_name")
+        if not ident or not backing or ident.lower().endswith("[1m]"):
+            continue
+        if (context_length(backing, api) or 0) >= ONE_M:
+            entry["id"] = f"{ident}[1m]"
+            changed = True
+            log(f"tagged {ident} as 1M ({backing})")
+    if not changed:
+        return payload
+    for key in ("first_id", "last_id"):
+        if doc.get(key):
+            match = next((m["id"] for m in models
+                          if isinstance(m, dict)
+                          and m.get("id", "").startswith(doc[key])), None)
+            if match:
+                doc[key] = match
+    return json.dumps(doc).encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # quieter than the default access log
+        pass
+
+    def _proxy(self):
+        path = normalise(self.path)
+        if path != self.path:
+            log(f"rewrote {self.path} -> {path}")
+
+        body = None
+        length = self.headers.get("Content-Length")
+        if length:
+            body = self.rfile.read(int(length))
+            body = self._untag_model(body)
+
+        headers = {
+            k: v for k, v in self.headers.items()
+            if k.lower() not in STRIP
+        }
+        headers["Host"] = f"{self.server.up_host}:{self.server.up_port}"
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+
+        waited = time.monotonic()
+        with self.server.slots:
+            queued = time.monotonic() - waited
+            if queued > 0.5:
+                log(f"{path} waited {queued:.1f}s for a slot")
+
+            delay = self.server.base_delay
+            for attempt in range(1, self.server.attempts + 1):
+                conn = http.client.HTTPConnection(
+                    self.server.up_host, self.server.up_port,
+                    timeout=self.server.timeout,
+                )
+                try:
+                    conn.request(self.command, path, body=body, headers=headers)
+                    resp = conn.getresponse()
+                except Exception as exc:
+                    conn.close()
+                    if attempt == self.server.attempts:
+                        self.send_error(502, f"upstream unreachable: {exc}")
+                        return
+                    time.sleep(delay)
+                    delay = min(delay * 2, self.server.max_delay)
+                    continue
+
+                # Nothing has been streamed yet, so retrying here is safe.
+                if resp.status in RETRY_STATUS and attempt < self.server.attempts:
+                    resp.read()
+                    conn.close()
+                    pause = delay + random.uniform(0, delay * 0.25)
+                    log(f"upstream {resp.status} on {path}; "
+                        f"attempt {attempt}/{self.server.attempts}, waiting {pause:.1f}s")
+                    time.sleep(pause)
+                    delay = min(delay * 2, self.server.max_delay)
+                    continue
+
+                self._relay(resp, conn, path)
+                return
+
+    def _untag_model(self, body):
+        """Drop a trailing [1m] from the requested model. The app strips this
+        itself before dispatching, but it costs nothing to be certain — the
+        gateway only knows the untagged IDs."""
+        try:
+            doc = json.loads(body)
+        except (ValueError, TypeError):
+            return body
+        model = doc.get("model") if isinstance(doc, dict) else None
+        if not isinstance(model, str):
+            return body
+        bare = re.sub(r"\[1m\]$", "", model, flags=re.I)
+        if bare == model:
+            return body
+        doc["model"] = bare
+        return json.dumps(doc).encode()
+
+    def _relay(self, resp, conn, path=""):
+        """Stream the upstream response through, re-chunking as we go.
+
+        The model catalog is the one response we buffer rather than stream, so
+        the 1M markers can be added; it is a few kilobytes and fetched rarely.
+        """
+        if path.startswith("/v1/models") and resp.status == 200:
+            try:
+                payload = tag_1m(resp.read(), self.server.ollama_api)
+                self.send_response(200)
+                for key, value in resp.getheaders():
+                    if key.lower() not in HOP_BY_HOP:
+                        self.send_header(key, value)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                conn.close()
+            return
+
+        try:
+            self.send_response(resp.status)
+            for key, value in resp.getheaders():
+                if key.lower() not in HOP_BY_HOP:
+                    self.send_header(key, value)
+            if resp.status in RETRY_STATUS:
+                # Give the client a real number to back off on.
+                self.send_header("Retry-After", str(self.server.max_delay))
+                log(f"giving up on {self.path} with {resp.status}")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(b"%X\r\n" % len(chunk) + chunk + b"\r\n")
+                self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client hung up mid-stream; nothing useful to do
+        finally:
+            conn.close()
+
+    do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = _proxy
+
+    def do_HEAD(self):
+        self._proxy()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=11436)
+    ap.add_argument("--upstream", default="127.0.0.1:11435")
+    ap.add_argument("--limit", type=int, default=3,
+                    help="requests allowed in flight upstream at once")
+    ap.add_argument("--attempts", type=int, default=6)
+    ap.add_argument("--base-delay", type=float, default=1.0)
+    ap.add_argument("--max-delay", type=float, default=30.0)
+    ap.add_argument("--timeout", type=float, default=1800.0)
+    ap.add_argument("--ollama-api", default="127.0.0.1:11434",
+                    help="Ollama's own API, used to read real context lengths")
+    ap.add_argument("--exit-with-app", action="store_true",
+                    help="shut down once Claude Desktop quits")
+    args = ap.parse_args()
+
+    host, _, port = args.upstream.partition(":")
+
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server.daemon_threads = True
+    server.slots = threading.Semaphore(args.limit)
+    server.up_host, server.up_port = host, int(port)
+    server.attempts = args.attempts
+    server.base_delay = args.base_delay
+    server.max_delay = args.max_delay
+    server.timeout = args.timeout
+    server.ollama_api = args.ollama_api
+
+    log(f"listening on 127.0.0.1:{args.port} -> {args.upstream} "
+        f"(limit {args.limit}, {args.attempts} attempts, "
+        f"{args.base_delay:g}s doubling to {args.max_delay:g}s)")
+
+    if args.exit_with_app:
+        threading.Thread(target=watch_app, daemon=True).start()
+        log("will exit when Claude Desktop does")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log("stopping")
+
+
+if __name__ == "__main__":
+    main()
