@@ -18,15 +18,15 @@ Plus a `Claude (Ollama).app` launcher so it has a Dock icon.
 ## Install
 
 ```sh
-brew tap aaditya-v-more/claude-ollama
+brew tap aaditya-v-more/tap
 brew install claude-ollama
 claude-ollama install-app
 ```
 
-Or in one line: `brew install aaditya-v-more/claude-ollama/claude-ollama`.
+Or in one line: `brew install aaditya-v-more/tap/claude-ollama`.
 
 The formula itself lives in
-[aaditya-v-more/homebrew-claude-ollama](https://github.com/aaditya-v-more/homebrew-claude-ollama);
+[aaditya-v-more/homebrew-tap](https://github.com/aaditya-v-more/homebrew-tap);
 this repository is the source it builds from.
 
 This assumes you already have Claude Desktop in `/Applications` and Ollama
@@ -130,7 +130,7 @@ Its log, when started by the launcher, is at
 ```sh
 claude-ollama uninstall-app
 brew uninstall claude-ollama
-brew untap aaditya-v-more/claude-ollama
+brew untap aaditya-v-more/tap
 ```
 
 The profile at `~/Library/Application Support/Claude-3p` is Claude Desktop's,

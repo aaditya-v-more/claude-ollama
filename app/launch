@@ -46,8 +46,8 @@ done
 if [ -z "${wrapper:-}" ]; then
   alert "Could not find the claude-ollama launcher.
 
-Reinstall it with:
-    brew install aaditya-v-more/claude-ollama/claude-ollama"
+Reinstall it, then run \`claude-ollama install-app\` again:
+    https://github.com/aaditya-v-more/claude-ollama"
   exit 1
 fi
 
