@@ -9,16 +9,20 @@
 # giving up.
 #
 # Override any value for a single launch:
-#   SUBAGENTS=2 RETRIES=40 claude-ollama
+#   SUBAGENTS=2 PACE_LIMIT=2 claude-ollama
+#
+# Or for every launch, including the one from the Dock, which gets no shell and
+# so cannot see anything exported in a profile:
+#   claude-ollama config --init && $EDITOR "$(claude-ollama config --path)"
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # ---------------------------------------------------------------- locations --
 
-# Follow symlinks so the Homebrew shim in bin resolves back to the Cellar, where
-# the proxy and the app bundle sit alongside this script.
+# Follow symlinks so the Homebrew shim in bin resolves back to the Cellar or
+# Caskroom, where the proxy sits alongside this script.
 self=${BASH_SOURCE[0]}
 while [ -L "$self" ]; do
   dir=$(cd -P -- "$(dirname -- "$self")" && pwd)
@@ -28,19 +32,66 @@ done
 BIN_DIR=$(cd -P -- "$(dirname -- "$self")" && pwd)
 PREFIX=$(cd -P -- "$BIN_DIR/.." && pwd)
 
-# Baked in at install time. The versioned Cellar path moves on every upgrade,
-# so anything long-lived — the ~/Applications link in particular — has to point
-# at the stable opt prefix instead.
+# Baked in at install time by a formula build. A cask leaves it alone: there the
+# app is moved into place by Homebrew and found by search instead.
 OPT_PREFIX="@@OPT_PREFIX@@"
 case $OPT_PREFIX in "@@"*) OPT_PREFIX="$PREFIX" ;; esac
 
 PACE="${CLAUDE_OLLAMA_PACE:-$BIN_DIR/claude-ollama-pace}"
 BUNDLE_NAME="Claude (Ollama).app"
-BUNDLE="$OPT_PREFIX/$BUNDLE_NAME"
-[ -d "$BUNDLE" ] || BUNDLE="$PREFIX/$BUNDLE_NAME"
 LINK="$HOME/Applications/$BUNDLE_NAME"
 
-# ------------------------------------------------------------------ tunables --
+CONFIG="${CLAUDE_OLLAMA_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-ollama/config}"
+
+# ------------------------------------------------------------------ settings --
+
+# Everything tunable, in the order `config` prints it. Anything not on this list
+# is rejected by the config reader, so a typo shows up as a message rather than
+# as a setting that silently does nothing.
+KNOWN="CLAUDE_APP RETRIES SUBAGENTS TIMEOUT_MS CLASSIFIER CONTEXT_TOKENS COMPACT
+GATEWAY_PORT PACE_UPSTREAM PACE_PORT PACE_LIMIT PACE_ATTEMPTS PACE_BASE_DELAY
+PACE_MAX_DELAY PACE_TIMEOUT PACE_OLLAMA_API PACE_EXIT_WITH_APP PACE_LOG"
+# Collapse to one space-separated line. Membership is tested with a `case` glob
+# on " $KNOWN ", which only matches names bounded by spaces — a name that
+# happened to start a line would be rejected as unknown.
+KNOWN=$(echo $KNOWN)
+
+ENV_SET=" "
+FILE_SET=" "
+for name in $KNOWN; do
+  [ -n "${!name:-}" ] && ENV_SET="$ENV_SET$name "
+done
+
+# The process environment wins over the file, so a one-off override on the
+# command line still beats a saved setting.
+load_config() {
+  [ -r "$CONFIG" ] || return 0
+  local line name value
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    case $line in *[!$' \t']*) ;; *) continue ;; esac
+    case $line in *=*) ;; *) echo "$CONFIG: ignoring line without '=': $line" >&2
+                            continue ;; esac
+    name=${line%%=*}
+    value=${line#*=}
+    # Trim surrounding whitespace, then a matched pair of quotes.
+    name=$(printf %s "$name" | tr -d '[:space:]')
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    case $value in
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    case " $KNOWN " in
+      *" $name "*) ;;
+      *) echo "$CONFIG: unknown setting '$name'" >&2; continue ;;
+    esac
+    [ -n "${!name:-}" ] && continue
+    export "$name=$value"
+    FILE_SET="$FILE_SET$name "
+  done < "$CONFIG"
+}
+load_config
 
 APP="${CLAUDE_APP:-/Applications/Claude.app}"
 PROFILE="${CLAUDE_OLLAMA_PROFILE:-$HOME/Library/Application Support/Claude-3p}"
@@ -71,10 +122,23 @@ CONTEXT_TOKENS="${CONTEXT_TOKENS:-1048576}"
 # Set COMPACT=off to force it on anyway.
 COMPACT="${COMPACT:-on}"
 
+# The gateway has two names because two things need it: PACE_UPSTREAM is the
+# proxy's own setting and takes a host:port, GATEWAY_PORT is the shorthand for
+# the usual case. Both end up as one value, which is also what gets health
+# checked, so they can never disagree.
 GATEWAY_PORT="${GATEWAY_PORT:-11435}"
+GATEWAY="${PACE_UPSTREAM:-127.0.0.1:$GATEWAY_PORT}"
+
 PACE_PORT="${PACE_PORT:-11436}"
 PACE_LIMIT="${PACE_LIMIT:-3}"
 PACE_LOG="${PACE_LOG:-$HOME/.local/state/claude-ollama-pace.log}"
+PACE_EXIT_WITH_APP="${PACE_EXIT_WITH_APP:-on}"
+
+# The proxy reads every one of its settings from the environment, so exporting
+# the resolved values is the whole of the handover — nothing has to be mirrored
+# as a flag, and a PACE_* the launcher has never heard of still reaches it.
+export PACE_UPSTREAM="$GATEWAY"
+export PACE_PORT PACE_LIMIT
 
 # ------------------------------------------------------------------- helpers --
 
@@ -83,6 +147,29 @@ die() { echo "$*" >&2; exit 1; }
 # lsof rather than bash's /dev/tcp, so the check does not depend on the shell
 # this ends up being run under.
 listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+
+off() { case $(printf %s "${1:-}" | tr '[:upper:]' '[:lower:]') in
+          0|off|no|false) return 0 ;; *) return 1 ;; esac; }
+
+# Where the app bundle ended up. A cask moves it into /Applications, a formula
+# or a source checkout leaves it in the prefix, and install-app links it into
+# ~/Applications — so all four are worth looking in.
+find_bundle() {
+  local candidate
+  for candidate in \
+    "${CLAUDE_OLLAMA_APP:-}" \
+    "$OPT_PREFIX/$BUNDLE_NAME" \
+    "$PREFIX/$BUNDLE_NAME" \
+    "/Applications/$BUNDLE_NAME" \
+    "$LINK"
+  do
+    if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
 
 # An app's environment is fixed at launch, so --env only reaches a new instance.
 # A Claude process with no --user-data-dir argument is one launched on the 3p
@@ -104,9 +191,11 @@ start_pace() {
   [ -x "$PACE" ] || return 0
   listening "$PACE_PORT" && return 0
 
+  local exit_flag=--exit-with-app
+  off "$PACE_EXIT_WITH_APP" && exit_flag=--no-exit-with-app
+
   mkdir -p "$(dirname "$PACE_LOG")"
-  nohup "$PACE" --port "$PACE_PORT" --upstream "127.0.0.1:$GATEWAY_PORT" \
-    --limit "$PACE_LIMIT" --exit-with-app >>"$PACE_LOG" 2>&1 &
+  nohup "$PACE" "$exit_flag" >>"$PACE_LOG" 2>&1 &
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     listening "$PACE_PORT" && break
     sleep 0.3
@@ -149,8 +238,10 @@ for path in glob.glob(os.path.join(folder, "*.json")):
 PY
 }
 
-# The set of overrides, as NAME=VALUE lines. `run` turns these into --env
-# arguments and `env` just prints them, so the two can never drift apart.
+# The set of overrides handed to Claude Desktop, as NAME=VALUE lines. `run`
+# turns these into --env arguments and `env` just prints them, so the two can
+# never drift apart. The proxy's own settings are not in here; those travel in
+# the exported environment instead.
 overrides() {
   [ "$COMPACT" = "on" ] || echo "DISABLE_COMPACT=1"
   cat <<EOF
@@ -171,8 +262,8 @@ EOF
 cmd_run() {
   [ -d "$APP" ] || die "Claude.app not found at $APP"
 
-  if ! curl -sf -m 5 -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/v1/models"; then
-    echo "Warning: the Ollama gateway on 127.0.0.1:$GATEWAY_PORT is not responding." >&2
+  if ! curl -sf -m 5 -o /dev/null "http://$GATEWAY/v1/models"; then
+    echo "Warning: the Ollama gateway on $GATEWAY is not responding." >&2
     echo "Start Ollama.app first, or the app will have nothing to talk to." >&2
   fi
 
@@ -197,14 +288,22 @@ cmd_run() {
 
 cmd_pace() {
   [ -x "$PACE" ] || die "Pacing proxy not found at $PACE"
-  exec "$PACE" --port "$PACE_PORT" --upstream "127.0.0.1:$GATEWAY_PORT" \
-    --limit "$PACE_LIMIT" "$@"
+  # No flags of our own: the settings are already in the environment, and
+  # anything passed here beats them.
+  exec "$PACE" "$@"
 }
 
 cmd_install_app() {
-  [ -d "$BUNDLE" ] || die "App bundle not found at $BUNDLE"
-  mkdir -p "$HOME/Applications"
+  local bundle
+  bundle=$(find_bundle) || die "No $BUNDLE_NAME found. Reinstall, or build one with Tools/make-app.sh."
 
+  case $bundle in
+    "/Applications/$BUNDLE_NAME"|"$LINK")
+      echo "Already installed at $bundle"
+      return 0 ;;
+  esac
+
+  mkdir -p "$HOME/Applications"
   if [ -e "$LINK" ] || [ -L "$LINK" ]; then
     # Only ever replace a link this command made. A real bundle sitting there is
     # somebody's earlier hand-rolled copy, and deleting it silently would be a
@@ -216,14 +315,14 @@ cmd_install_app() {
     rm "$LINK"
   fi
 
-  ln -s "$BUNDLE" "$LINK"
+  ln -s "$bundle" "$LINK"
   # LaunchServices caches bundle metadata by path; without this the Dock and
   # Spotlight can go on showing a stale icon or name after a reinstall.
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$LINK" >/dev/null 2>&1 || true
 
   echo "Linked $LINK"
-  echo "  -> $BUNDLE"
+  echo "  -> $bundle"
 }
 
 cmd_uninstall_app() {
@@ -238,6 +337,71 @@ cmd_uninstall_app() {
   fi
 }
 
+source_of() {
+  case " $ENV_SET " in *" $1 "*) echo environment; return ;; esac
+  case " $FILE_SET " in *" $1 "*) echo file; return ;; esac
+  echo default
+}
+
+cmd_config() {
+  case "${1:-}" in
+    --path) echo "$CONFIG"; return ;;
+    --init)
+      [ -e "$CONFIG" ] && { echo "$CONFIG already exists"; return; }
+      mkdir -p "$(dirname "$CONFIG")"
+      {
+        echo "# Settings for claude-ollama. One NAME=value per line."
+        echo "# These are read on every launch, including from the Dock, where"
+        echo "# nothing exported in a shell profile can reach the app."
+        echo "# Anything set in the environment overrides what is written here."
+        echo
+        for name in $KNOWN; do
+          printf '# %s=%s\n' "$name" "$(setting "$name")"
+        done
+      } > "$CONFIG"
+      echo "Wrote $CONFIG"
+      return ;;
+    "") ;;
+    *) die "usage: claude-ollama config [--path|--init]" ;;
+  esac
+
+  if [ -r "$CONFIG" ]; then
+    echo "file: $CONFIG"
+  else
+    echo "file: $CONFIG (not present; claude-ollama config --init writes one)"
+  fi
+  echo
+  for name in $KNOWN; do
+    printf '  %-20s %-34s %s\n' "$name" "$(setting "$name")" "$(source_of "$name")"
+  done
+}
+
+# Effective value of a setting, after the file and the defaults have been
+# applied. Kept in one place so `config` cannot report something the rest of
+# the script is not actually using.
+setting() {
+  case $1 in
+    CLAUDE_APP)          echo "$APP" ;;
+    RETRIES)             echo "$RETRIES" ;;
+    SUBAGENTS)           echo "$SUBAGENTS" ;;
+    TIMEOUT_MS)          echo "$TIMEOUT_MS" ;;
+    CLASSIFIER)          echo "$CLASSIFIER" ;;
+    CONTEXT_TOKENS)      echo "$CONTEXT_TOKENS" ;;
+    COMPACT)             echo "$COMPACT" ;;
+    GATEWAY_PORT)        echo "$GATEWAY_PORT" ;;
+    PACE_UPSTREAM)       echo "$GATEWAY" ;;
+    PACE_PORT)           echo "$PACE_PORT" ;;
+    PACE_LIMIT)          echo "$PACE_LIMIT" ;;
+    PACE_ATTEMPTS)       echo "${PACE_ATTEMPTS:-6}" ;;
+    PACE_BASE_DELAY)     echo "${PACE_BASE_DELAY:-1.0}" ;;
+    PACE_MAX_DELAY)      echo "${PACE_MAX_DELAY:-30.0}" ;;
+    PACE_TIMEOUT)        echo "${PACE_TIMEOUT:-1800.0}" ;;
+    PACE_OLLAMA_API)     echo "${PACE_OLLAMA_API:-127.0.0.1:11434}" ;;
+    PACE_EXIT_WITH_APP)  echo "$PACE_EXIT_WITH_APP" ;;
+    PACE_LOG)            echo "$PACE_LOG" ;;
+  esac
+}
+
 check() {  # check <label> <ok?> <detail>
   if [ "$2" = "yes" ]; then
     printf '  ok    %-22s %s\n' "$1" "$3"
@@ -249,6 +413,7 @@ check() {  # check <label> <ok?> <detail>
 
 cmd_doctor() {
   DOCTOR_FAILED=0
+  local bundle
   echo "claude-ollama $VERSION"
   echo "  prefix: $PREFIX"
   echo
@@ -263,19 +428,16 @@ cmd_doctor() {
   [ -x "$PACE" ] && check "pacing proxy" yes "$PACE" \
                  || check "pacing proxy" no "not executable at $PACE"
 
-  [ -d "$BUNDLE" ] && check "app bundle" yes "$BUNDLE" \
-                   || check "app bundle" no "not found at $BUNDLE"
-
-  if [ -L "$LINK" ]; then
-    check "~/Applications link" yes "-> $(readlink "$LINK")"
+  if bundle=$(find_bundle); then
+    check "app bundle" yes "$bundle"
   else
-    check "~/Applications link" no "run: claude-ollama install-app"
+    check "app bundle" no "not installed; run: claude-ollama install-app"
   fi
 
-  if curl -sf -m 5 -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/v1/models"; then
-    check "Ollama gateway" yes "127.0.0.1:$GATEWAY_PORT"
+  if curl -sf -m 5 -o /dev/null "http://$GATEWAY/v1/models"; then
+    check "Ollama gateway" yes "$GATEWAY"
   else
-    check "Ollama gateway" no "127.0.0.1:$GATEWAY_PORT not answering; start Ollama.app"
+    check "Ollama gateway" no "$GATEWAY not answering; start Ollama.app"
   fi
 
   if listening "$PACE_PORT"; then
@@ -285,10 +447,19 @@ cmd_doctor() {
       "not running (started on demand by \`claude-ollama run\`)"
   fi
 
+  printf '  --    %-22s %s\n' "proxy settings" \
+    "limit $(setting PACE_LIMIT), $(setting PACE_ATTEMPTS) attempts, $(setting PACE_BASE_DELAY)s to $(setting PACE_MAX_DELAY)s"
+
   if [ -d "$PROFILE" ]; then
     printf '  ok    %-22s %s\n' "profile" "$PROFILE"
   else
     printf '  --    %-22s %s\n' "profile" "$PROFILE (created on first launch)"
+  fi
+
+  if [ -r "$CONFIG" ]; then
+    printf '  ok    %-22s %s\n' "config" "$CONFIG"
+  else
+    printf '  --    %-22s %s\n' "config" "$CONFIG (not present; defaults in use)"
   fi
 
   echo
@@ -305,21 +476,27 @@ pacing proxy, with nothing written to the app's own settings.
 Usage: claude-ollama [command]
 
   run            Launch Claude Desktop with the overrides applied (default)
+  config         Show every setting, its value and where it came from
+  config --init  Write a commented settings file
+  config --path  Print the settings file's location
+  doctor         Check the gateway, proxy, bundle and profile
+  env            Print the overrides \`run\` hands to Claude Desktop
+  pace [args]    Run the pacing proxy in the foreground
   install-app    Link "Claude (Ollama).app" into ~/Applications
   uninstall-app  Remove that link
-  doctor         Check the gateway, proxy, bundle and profile
-  env            Print the overrides \`run\` would apply
-  pace [args]    Run the pacing proxy in the foreground
   version        Print the version
 
-Environment: RETRIES SUBAGENTS TIMEOUT_MS CLASSIFIER CONTEXT_TOKENS COMPACT
-             GATEWAY_PORT PACE_PORT PACE_LIMIT PACE_LOG CLAUDE_APP
+Settings come from the environment first, then $CONFIG,
+then the built-in defaults:
+
+$(printf '  %s\n' $KNOWN | fmt -w 74)
 EOF
 }
 
 case "${1:-run}" in
   run)            shift || true; cmd_run ;;
   pace)           shift; cmd_pace "$@" ;;
+  config)         shift; cmd_config "${1:-}" ;;
   install-app)    cmd_install_app ;;
   uninstall-app)  cmd_uninstall_app ;;
   doctor)         cmd_doctor ;;

@@ -15,6 +15,12 @@ Retries only ever happen before the first response byte, so a partially
 streamed reply is never restarted.
 
   claude-ollama-pace [--port 11436] [--upstream 127.0.0.1:11435] [--limit 3]
+
+Every option also reads an environment variable, so the settings survive a
+launch from the Dock where there is nowhere to type a flag: PACE_PORT,
+PACE_UPSTREAM, PACE_LIMIT, PACE_ATTEMPTS, PACE_BASE_DELAY, PACE_MAX_DELAY,
+PACE_TIMEOUT, PACE_OLLAMA_API, PACE_EXIT_WITH_APP. A flag beats the variable,
+and the variable beats the default.
 """
 
 import argparse
@@ -58,6 +64,31 @@ RETRY_STATUS = {429, 529, 503}
 
 def log(msg):
     print(f"[pace] {time.strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
+
+
+def env_str(name, default):
+    """Environment value for a setting, or the default. An empty variable is
+    treated as unset, so `PACE_LIMIT= claude-ollama` is not a parse error."""
+    value = os.environ.get(name)
+    return default if value is None or value.strip() == "" else value.strip()
+
+
+def env_num(name, default, cast):
+    raw = env_str(name, None)
+    if raw is None:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        log(f"ignoring {name}={raw!r}: not a number")
+        return default
+
+
+def env_flag(name, default):
+    raw = env_str(name, None)
+    if raw is None:
+        return default
+    return raw.lower() not in {"0", "off", "no", "false"}
 
 
 def app_running():
@@ -312,19 +343,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=11436)
-    ap.add_argument("--upstream", default="127.0.0.1:11435")
-    ap.add_argument("--limit", type=int, default=3,
+    ap = argparse.ArgumentParser(
+        description="Pacing proxy for Ollama's Claude gateway. Every option "
+                    "falls back to the matching PACE_* environment variable.")
+    ap.add_argument("--port", type=int, default=env_num("PACE_PORT", 11436, int))
+    ap.add_argument("--upstream", default=env_str("PACE_UPSTREAM", "127.0.0.1:11435"))
+    ap.add_argument("--limit", type=int, default=env_num("PACE_LIMIT", 3, int),
                     help="requests allowed in flight upstream at once")
-    ap.add_argument("--attempts", type=int, default=6)
-    ap.add_argument("--base-delay", type=float, default=1.0)
-    ap.add_argument("--max-delay", type=float, default=30.0)
-    ap.add_argument("--timeout", type=float, default=1800.0)
-    ap.add_argument("--ollama-api", default="127.0.0.1:11434",
+    ap.add_argument("--attempts", type=int, default=env_num("PACE_ATTEMPTS", 6, int))
+    ap.add_argument("--base-delay", type=float,
+                    default=env_num("PACE_BASE_DELAY", 1.0, float))
+    ap.add_argument("--max-delay", type=float,
+                    default=env_num("PACE_MAX_DELAY", 30.0, float))
+    ap.add_argument("--timeout", type=float,
+                    default=env_num("PACE_TIMEOUT", 1800.0, float))
+    ap.add_argument("--ollama-api", default=env_str("PACE_OLLAMA_API", "127.0.0.1:11434"),
                     help="Ollama's own API, used to read real context lengths")
     ap.add_argument("--exit-with-app", action="store_true",
+                    default=env_flag("PACE_EXIT_WITH_APP", False),
                     help="shut down once Claude Desktop quits")
+    # An explicit off switch, so PACE_EXIT_WITH_APP=1 in the environment can
+    # still be overruled by the caller rather than only the other way round.
+    ap.add_argument("--no-exit-with-app", dest="exit_with_app",
+                    action="store_false", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     host, _, port = args.upstream.partition(":")
