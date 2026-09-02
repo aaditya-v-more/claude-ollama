@@ -2,5 +2,14 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Claude (Ollama)</title>
+        <item>
+            <title>1.3.0</title>
+            <pubDate>Wed, 02 Sep 2026 18:38:24 +0530</pubDate>
+            <link>https://github.com/aaditya-v-more/claude-ollama</link>
+            <sparkle:version>1.3.0</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>11.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/aaditya-v-more/claude-ollama/releases/download/v1.3.0/ClaudeOllama-1.3.0.zip" length="2159720" type="application/octet-stream" sparkle:edSignature="ZjoiJm65cSKtgIWx/jxZjgjT6+X5yq2UcnN30r6ueLBVVIjdal8jWrhIIFOKT6tzDFZ7emjIhiNoiE2/cDVqBQ=="/>
+        </item>
     </channel>
 </rss>
