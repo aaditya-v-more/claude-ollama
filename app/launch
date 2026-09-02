@@ -15,21 +15,24 @@ end run
 OSA
 }
 
-# .../Claude (Ollama).app/Contents/MacOS/launch -> the directory holding the
-# bundle. Symlinks are followed, so a bundle linked into ~/Applications still
-# finds the copy of the wrapper it was installed alongside.
+# .../Claude (Ollama).app/Contents/MacOS/launch -> the bundle's own directories
+# and the one holding it. Symlinks are followed, so a bundle linked into
+# ~/Applications still finds the copy of the wrapper it was installed with.
 self=${BASH_SOURCE[0]}
 while [ -L "$self" ]; do
   dir=$(cd -P -- "$(dirname -- "$self")" && pwd)
   self=$(readlink -- "$self")
   case $self in /*) ;; *) self="$dir/$self" ;; esac
 done
-bundle_parent=$(cd -P -- "$(dirname -- "$self")/../../.." && pwd)
+contents=$(cd -P -- "$(dirname -- "$self")/.." && pwd)
+bundle_parent=$(cd -P -- "$contents/../.." && pwd)
 
-# In order: an explicit override, the copy installed next to this bundle, the
-# path baked in at install time, then the usual Homebrew prefixes.
+# In order: an explicit override, the copy inside this bundle, one installed
+# beside it, the path baked in at install time, then the usual Homebrew
+# prefixes.
 for candidate in \
   "${CLAUDE_OLLAMA_BIN:-}" \
+  "$contents/Resources/bin/claude-ollama" \
   "$bundle_parent/bin/claude-ollama" \
   "@@WRAPPER@@" \
   /opt/homebrew/bin/claude-ollama \

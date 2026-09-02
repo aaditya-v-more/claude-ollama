@@ -56,7 +56,7 @@ CTX_PENDING = set()
 CTX_LOCK = threading.Lock()
 MISSING = object()
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 # How long a single /api/show may take, and how long the whole catalog response
 # may spend waiting on them. The second one is the important number: Claude

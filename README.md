@@ -16,7 +16,7 @@ Two pieces:
   rejects, and repairs two things the gateway gets wrong on the way through.
 
 Plus a `Claude (Ollama).app` launcher, which stays in the menu bar while Claude
-is open and shows what the proxy is doing.
+is open, shows what the proxy is doing, and keeps itself up to date.
 
 ## Install
 
@@ -25,9 +25,10 @@ brew install --cask aaditya-v-more/tap/claude-ollama
 ```
 
 That puts **Claude (Ollama)** in `/Applications` and the `claude-ollama` and
-`claude-ollama-pace` commands on your `PATH`. Set
-`HOMEBREW_CASK_OPTS="--appdir=~/Applications"` first if you would rather it went
-there. The formula itself lives in
+`claude-ollama-pace` commands on your `PATH`. Both commands live inside the app
+bundle and are symlinked out of it, which is what lets [an update](#updates)
+move all three at once. Set `HOMEBREW_CASK_OPTS="--appdir=~/Applications"` first
+if you would rather it went there. The formula itself lives in
 [aaditya-v-more/homebrew-tap](https://github.com/aaditya-v-more/homebrew-tap);
 this repository is the source it builds from.
 
@@ -51,8 +52,16 @@ its environment.
 Launched from the app, a menu bar item appears alongside it showing the port
 the proxy settled on, how many requests are in flight against the limit, how
 many the gateway has pushed back on, and how many models were found to have a
-1M window. It can copy the endpoint, open the log or the settings file, and
-restart the proxy without restarting Claude.
+1M window. It can copy the endpoint, open the log, and restart the proxy
+without restarting Claude.
+
+Its **Settings** submenu lists every value in the tables below and will take a
+new one. As the menu says, a saved setting is applied the next time Claude
+starts: it goes into the settings file, and an app's environment is fixed at
+launch, so a running one cannot be told about it.
+
+The bottom of the menu says which version this is, and whether a newer one is
+waiting.
 
 Both the menu item and the proxy exit on their own once Claude quits.
 
@@ -78,6 +87,17 @@ claude-ollama config --init
 That writes `~/.config/claude-ollama/config`, a commented `NAME=value` list.
 Changes take effect on the next launch; nothing needs reinstalling, because the
 app bundle holds no settings of its own — it just calls `claude-ollama`.
+
+One at a time, without an editor — which is what the menu bar item does:
+
+```sh
+claude-ollama config --set PACE_LIMIT=2
+```
+
+The value is written under the commented default `--init` left behind, so the
+file still records what it was before. An empty value — `config --set
+PACE_LIMIT=` — takes the line out again and hands the setting back to its
+default.
 
 `claude-ollama config` prints every setting, its effective value, and whether
 that came from the environment, the file or the default. The environment always
@@ -161,6 +181,38 @@ profile's `inferenceGatewayBaseUrl` back to its own port, silently taking the
 app off the proxy and losing both the pacing and the context tagging. The
 launcher re-asserts it on every start.
 
+## Updates
+
+The app updates itself. While it is running it checks
+[an appcast](https://aaditya-v-more.github.io/claude-ollama/appcast.xml) hourly,
+downloads anything newer in the background, and installs it when Claude quits —
+which is when the menu bar item quits too. Nothing is swapped underneath a
+running session, nothing relaunches, and nothing asks. The next time you open
+Claude (Ollama), it is the new version.
+
+That works because the bundle is the whole install: the launcher and the pacing
+proxy sit in `Contents/Resources/bin`, and the commands on your `PATH` are
+symlinks into it. Replacing the bundle replaces all of it at once, so the
+`claude-ollama` you type is never a different version from the app you opened.
+
+The menu bar item's last lines say which version is running, and — once one has
+been downloaded — which one goes in when Claude quits. **Check for Updates**
+looks now rather than waiting for the next hour; it installs on the same terms,
+so there is no dialog either way.
+
+Updates are signed with an EdDSA key whose public half is in the app's
+`Info.plist`; anything that does not verify against it is refused. The cask
+declares `auto_updates true`, so `brew upgrade` leaves the app alone and the two
+never fight over it — `brew upgrade --cask --greedy claude-ollama` still works
+if you want Homebrew to do it.
+
+To stop it looking at all — worth doing for a bundle you built from a checkout,
+which would otherwise replace itself with a released one:
+
+```sh
+defaults write local.aaditya.claude-ollama-launcher SUEnableAutomaticChecks -bool false
+```
+
 ## Commands
 
 ```
@@ -170,6 +222,7 @@ claude-ollama restart-proxy   stop the proxy and start it again on the same port
 claude-ollama config          every setting, its value and where it came from
 claude-ollama config --init   write a commented settings file
 claude-ollama config --path   print the settings file's location
+claude-ollama config --set    write one setting: NAME=VALUE, or NAME= for the default
 claude-ollama doctor          check gateway, proxy, bundle, profile, config
 claude-ollama env             print the overrides handed to Claude Desktop
 claude-ollama pace [args]     run the proxy in the foreground
@@ -189,9 +242,19 @@ cd claude-ollama
 Put `bin` on your `PATH` if you want the command as well. Everything resolves
 relative to the checkout, so there is nothing else to set.
 
-`make-app.sh` compiles the menu bar item with `swiftc`. Without the Xcode
-command line tools it falls back to a shell launcher that starts Claude and
-exits — same behaviour, no menu item.
+`make-app.sh` compiles the menu bar item with `swiftc`, for both architectures,
+and copies the two scripts into the bundle beside it. It fetches the Sparkle
+framework into `vendor/` on the way — pinned and checksummed by
+`Tools/fetch-sparkle.sh` — and carries on without it if there is no network,
+building an app that works but cannot update itself. Without the Xcode command
+line tools it falls back to a shell launcher that starts Claude and exits — same
+behaviour, no menu item.
+
+`Tools/release.sh` is the other half: it packages the archive the cask and the
+update feed both use, checks it (version stamped, both architectures, signature
+intact, commands aboard), adds a signed entry to `docs/appcast.xml`, and points
+a clone of the tap at the new version. It publishes nothing; it prints what to
+publish.
 
 ## Uninstall
 

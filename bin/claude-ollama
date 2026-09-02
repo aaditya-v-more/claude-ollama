@@ -14,10 +14,11 @@
 # Or for every launch, including the one from the Dock, which gets no shell and
 # so cannot see anything exported in a profile:
 #   claude-ollama config --init && $EDITOR "$(claude-ollama config --path)"
+#   claude-ollama config --set PACE_LIMIT=2
 
 set -euo pipefail
 
-VERSION="1.2.1"
+VERSION="1.3.0"
 
 # ---------------------------------------------------------------- locations --
 
@@ -36,6 +37,16 @@ PREFIX=$(cd -P -- "$BIN_DIR/.." && pwd)
 # app is moved into place by Homebrew and found by search instead.
 OPT_PREFIX="@@OPT_PREFIX@@"
 case $OPT_PREFIX in "@@"*) OPT_PREFIX="$PREFIX" ;; esac
+
+# This script ships inside the app bundle, at Contents/Resources/bin, so the
+# bundle it belongs to is two directories above the prefix. That is the whole
+# reason it lives there: Homebrew symlinks the commands out of the bundle, and
+# an update replaces the bundle, so the command on the PATH and the app it came
+# with can never be different versions.
+case $PREFIX in
+  */Contents/Resources) OWN_BUNDLE=$(cd -P -- "$PREFIX/../.." && pwd) ;;
+  *) OWN_BUNDLE="" ;;
+esac
 
 PACE="${CLAUDE_OLLAMA_PACE:-$BIN_DIR/claude-ollama-pace}"
 BUNDLE_NAME="Claude (Ollama).app"
@@ -163,6 +174,7 @@ find_bundle() {
   local candidate
   for candidate in \
     "${CLAUDE_OLLAMA_APP:-}" \
+    "$OWN_BUNDLE" \
     "$OPT_PREFIX/$BUNDLE_NAME" \
     "$PREFIX/$BUNDLE_NAME" \
     "/Applications/$BUNDLE_NAME" \
@@ -426,26 +438,129 @@ source_of() {
   echo default
 }
 
+# Which half a setting belongs to: what the proxy reads, including the gateway
+# address it is pointed at, against what Claude Desktop is launched with. Only
+# the menu bar item uses this, but it is the launcher's knowledge to hold.
+group_of() {
+  case $1 in PACE_*|GATEWAY_PORT) echo proxy ;; *) echo claude ;; esac
+}
+
+# Every setting as one tab-separated line. The value comes last so a value that
+# somehow contains a tab still arrives intact.
+settings_table() {
+  local name
+  for name in $KNOWN; do
+    printf '%s\t%s\t%s\t%s\n' \
+      "$name" "$(source_of "$name")" "$(group_of "$name")" "$(setting "$name")"
+  done
+}
+
+# The commented list of defaults `--init` leaves behind. `--set` writes one too
+# when there is nothing there yet, so a setting saved from the menu bar arrives
+# in a file that still documents everything else.
+write_config_template() {
+  # `local name`, because --set holds the name it is writing in a variable of
+  # the same name and this loop would otherwise overwrite it.
+  local name
+  mkdir -p "$(dirname "$CONFIG")"
+  {
+    echo "# Settings for claude-ollama. One NAME=value per line."
+    echo "# These are read on every launch, including from the Dock, where"
+    echo "# nothing exported in a shell profile can reach the app."
+    echo "# Anything set in the environment overrides what is written here."
+    echo
+    for name in $KNOWN; do
+      printf '# %s=%s\n' "$name" "$(setting "$name")"
+    done
+  } > "$CONFIG"
+}
+
+# config --set NAME=VALUE, the one way to change a setting without opening an
+# editor — which is all the menu bar item has. An empty value takes the line out
+# again and hands the setting back to its default.
+cmd_config_set() {
+  local pair=${1:-} name value
+  case $pair in
+    *=*) ;;
+    *) die "usage: claude-ollama config --set NAME=VALUE" ;;
+  esac
+  name=$(printf %s "${pair%%=*}" | tr -d '[:space:]')
+  value=${pair#*=}
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  # The reader exports what it finds verbatim, so a tilde left in the file would
+  # reach the app as a literal ~ and the path would silently not exist.
+  case $value in "~"|"~/"*) value="$HOME${value#\~}" ;; esac
+
+  case " $KNOWN " in
+    *" $name "*) ;;
+    *) die "Unknown setting '$name'. \`claude-ollama config\` lists them all." ;;
+  esac
+  case $value in
+    *"#"*) die "'#' starts a comment in the settings file, so $name cannot hold one." ;;
+    *$'\n'*) die "A setting has to fit on one line." ;;
+  esac
+
+  [ -e "$CONFIG" ] || { write_config_template; echo "Wrote $CONFIG"; }
+  # The rewrite is a temporary file swapped into place, so it is the directory
+  # that has to be writable. Checked here rather than left to python, whose
+  # complaint about it would reach the menu bar item as a traceback.
+  [ -w "$(dirname "$CONFIG")" ] || die "Cannot write to $(dirname "$CONFIG")"
+
+  python3 - "$CONFIG" "$name" "$value" <<'SET_SETTING'
+import os, re, sys
+
+path, name, value = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as handle:
+    lines = handle.read().splitlines()
+
+live = re.compile(r"^\s*%s\s*=" % re.escape(name))
+commented = re.compile(r"^\s*#\s*%s\s*=" % re.escape(name))
+
+out, written = [], False
+for line in lines:
+    if live.match(line):
+        # Replaced where it stands, and any later duplicate dropped, so the file
+        # can never end up with two lines for one setting saying different things.
+        if value and not written:
+            out.append(f"{name}={value}")
+            written = True
+        continue
+    out.append(line)
+    if value and not written and commented.match(line):
+        # Straight under the commented default, which stays as a note of what
+        # the setting was before anyone touched it.
+        out.append(f"{name}={value}")
+        written = True
+
+if value and not written:
+    out.append(f"{name}={value}")
+
+tmp = path + ".tmp"
+with open(tmp, "w") as handle:
+    handle.write("\n".join(out).rstrip("\n") + "\n")
+os.replace(tmp, path)
+SET_SETTING
+
+  if [ -n "$value" ]; then
+    echo "$CONFIG: $name=$value"
+  else
+    echo "$CONFIG: $name removed; the built-in default applies again"
+  fi
+  echo "Applied the next time Claude starts."
+}
+
 cmd_config() {
   case "${1:-}" in
     --path) echo "$CONFIG"; return ;;
+    --set) shift; cmd_config_set "${1:-}"; return ;;
     --init)
       [ -e "$CONFIG" ] && { echo "$CONFIG already exists"; return; }
-      mkdir -p "$(dirname "$CONFIG")"
-      {
-        echo "# Settings for claude-ollama. One NAME=value per line."
-        echo "# These are read on every launch, including from the Dock, where"
-        echo "# nothing exported in a shell profile can reach the app."
-        echo "# Anything set in the environment overrides what is written here."
-        echo
-        for name in $KNOWN; do
-          printf '# %s=%s\n' "$name" "$(setting "$name")"
-        done
-      } > "$CONFIG"
+      write_config_template
       echo "Wrote $CONFIG"
       return ;;
     "") ;;
-    *) die "usage: claude-ollama config [--path|--init]" ;;
+    *) die "usage: claude-ollama config [--path|--init|--set NAME=VALUE]" ;;
   esac
 
   if [ -r "$CONFIG" ]; then
@@ -588,7 +703,13 @@ cmd_status() {
   if [ "${1:-}" = "--json" ]; then
     # One object either way, so the caller never has to special-case a proxy
     # that is not running.
-    CO_HEALTH="$health" CO_APP="$APP" CO_LOG="$PACE_LOG" CO_CONFIG="$CONFIG"     CO_RUNNING=$(app_running && echo true || echo false)     python3 - <<'STATUS_JSON'
+    # The settings travel with the status rather than in a call of their own:
+    # the menu bar item polls this every few seconds already, and it draws both
+    # halves of its menu from one answer.
+    CO_HEALTH="$health" CO_APP="$APP" CO_LOG="$PACE_LOG" CO_CONFIG="$CONFIG" \
+    CO_RUNNING=$(app_running && echo true || echo false) \
+    CO_SETTINGS="$(settings_table)" \
+    python3 - <<'STATUS_JSON'
 import json, os
 
 health = os.environ.get("CO_HEALTH") or ""
@@ -597,12 +718,21 @@ try:
 except ValueError:
     proxy = None
 
+settings = []
+for line in os.environ.get("CO_SETTINGS", "").splitlines():
+    if not line.strip():
+        continue
+    name, source, group, value = line.split("\t", 3)
+    settings.append({"name": name, "value": value,
+                     "source": source, "group": group})
+
 print(json.dumps({
     "proxy": proxy,
     "claudeRunning": os.environ["CO_RUNNING"] == "true",
     "claudeApp": os.environ["CO_APP"],
     "log": os.environ["CO_LOG"],
     "config": os.environ["CO_CONFIG"],
+    "settings": settings,
 }))
 STATUS_JSON
     return
@@ -645,6 +775,7 @@ Usage: claude-ollama [command]
   config         Show every setting, its value and where it came from
   config --init  Write a commented settings file
   config --path  Print the settings file's location
+  config --set   Write one setting: NAME=VALUE, or NAME= for the default
   status         Report what the proxy is doing right now
   doctor         Check the gateway, proxy, bundle and profile
   env            Print the overrides \`run\` hands to Claude Desktop
@@ -664,7 +795,7 @@ EOF
 case "${1:-run}" in
   run)            shift || true; cmd_run ;;
   pace)           shift; cmd_pace "$@" ;;
-  config)         shift; cmd_config "${1:-}" ;;
+  config)         shift; cmd_config "$@" ;;
   restart-proxy)  cmd_restart_proxy ;;
   install-app)    cmd_install_app ;;
   uninstall-app)  cmd_uninstall_app ;;

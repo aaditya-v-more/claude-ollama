@@ -3,11 +3,15 @@
 #
 #   Tools/make-payload.sh <output-dir>
 #
-# Lays the app bundle and the two scripts out at the archive root, which is
-# where the cask's `app` and `binary` stanzas expect to find them. The bundle is
-# built without a baked-in wrapper path on purpose: the cask symlinks the
-# scripts into the Homebrew prefix, and the launcher already searches both the
-# Apple Silicon and Intel prefixes, so one archive serves either.
+# The archive holds one thing: the app bundle, with the two commands inside it
+# at Contents/Resources/bin. That is what the cask's `app` stanza installs and
+# what its `binary` stanzas symlink into the Homebrew prefix — and, because a
+# Sparkle enclosure is a zipped bundle and nothing else, it is also exactly what
+# the update feed serves. One archive, one checksum, both jobs.
+#
+# No wrapper path is baked in: the bundle finds its own copy, and the launcher
+# already searches both the Apple Silicon and Intel prefixes, so one archive
+# serves either.
 
 set -euo pipefail
 
@@ -19,8 +23,6 @@ mkdir -p "$out"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
-mkdir -p "$stage/bin"
-install -m 755 "$here/bin/claude-ollama" "$here/bin/claude-ollama-pace" "$stage/bin/"
 "$here/Tools/make-app.sh" "$stage" >/dev/null
 
 archive="$out/ClaudeOllama-$version.zip"

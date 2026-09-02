@@ -8,10 +8,14 @@
 	<string>Claude (Ollama)</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.aaditya.claude-ollama-launcher</string>
+	<!-- Both stamped by make-app.sh from the VERSION file, which is the only
+	     place the number is written down. 0.0.0 here is a placeholder: a bundle
+	     still carrying it was never stamped, and Sparkle would never see an
+	     update as newer than it. -->
 	<key>CFBundleVersion</key>
-	<string>1.0</string>
+	<string>0.0.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>0.0.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
@@ -23,6 +27,21 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- Sparkle. The feed is a GitHub Pages path and is baked into every copy
+	     ever shipped: a build out in the world polls the URL it was born with,
+	     and Pages offers no redirect if the account is ever renamed.
+	     SUPublicEDKey is the public half of the key in the login keychain —
+	     the same key claude-graft ships, because Sparkle's own tool says one
+	     signing key covers however many apps you put it in. An update whose
+	     signature does not match it is refused.
+	     SUEnableAutomaticChecks answers, at build time, the question Sparkle
+	     would otherwise put to the user on first launch. -->
+	<key>SUFeedURL</key>
+	<string>https://aaditya-v-more.github.io/claude-ollama/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>TncOVOd5VFXtXoAD5/KoGC2ea9ls2tO3amPVx5jtty8=</string>
+	<key>SUEnableAutomaticChecks</key>
 	<true/>
 </dict>
 </plist>
