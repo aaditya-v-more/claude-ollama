@@ -15,9 +15,14 @@ brew install --cask aaditya-v-more/tap/claude-ollama
 
 <img src="docs/images/app-in-launcher.png" alt="Claude (Ollama) as the first result of a launcher search, with its own icon." width="520">
 
-It goes into `/Applications`, so Spotlight and Launchpad find it by name. This
-assumes you already have Claude Desktop there and Ollama serving its
-Claude-compatible gateway on `127.0.0.1:11435` — it installs neither.
+It goes into `/Applications`, so Spotlight and Launchpad find it by name.
+
+Two things have to be in place first, and this installs neither. Claude Desktop
+in `/Applications`, and Ollama's gateway actually switched on — it is not on by
+default. In the Ollama app open **Apps** and turn **Claude** on; for cloud
+models, sign in to Ollama and enable those as well, some of which need a paid
+plan. Until that is done nothing is listening on `127.0.0.1:11435` and none of
+this will work.
 
 ## Use
 

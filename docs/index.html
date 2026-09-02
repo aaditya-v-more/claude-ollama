@@ -118,6 +118,19 @@
     max-width: 34rem;
   }
 
+  .note {
+    margin-top: 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 7px 7px 0;
+    background: var(--panel);
+    font-size: 0.875rem;
+    color: var(--muted);
+    max-width: 34rem;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+
   /* ---------- sections ---------- */
 
   section { padding: 2.75rem 0; border-top: 1px solid var(--rule); }
@@ -225,6 +238,14 @@
       macOS 11 or newer. Assumes you already have Claude Desktop in
       <code>/Applications</code> and Ollama serving its Claude-compatible
       gateway on <code>127.0.0.1:11435</code>. It installs neither.
+    </p>
+
+    <p class="note">
+      <strong>Ollama's gateway is not on by default.</strong> In the Ollama app,
+      open <strong>Apps</strong> and turn <strong>Claude</strong> on. For cloud
+      models, sign in to Ollama and enable those as well — some need a paid
+      plan. Until that is done nothing is listening on
+      <code>127.0.0.1:11435</code>, and none of this will work.
     </p>
 
     <figure class="shot-launcher">
