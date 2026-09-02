@@ -174,7 +174,8 @@
     max-width: 32rem;
   }
 
-  .shot-hero { margin-top: 2.5rem; }
+  .shot-launcher { margin-top: 2.5rem; }
+  .shot-launcher img { width: 100%; max-width: 520px; }
   .shot-hero img { width: 380px; }
   .shot-settings img { width: 100%; max-width: 480px; }
 
@@ -225,6 +226,15 @@
       <code>/Applications</code> and Ollama serving its Claude-compatible
       gateway on <code>127.0.0.1:11435</code>. It installs neither.
     </p>
+
+    <figure class="shot-launcher">
+      <img src="images/app-in-launcher.png"
+           alt="Claude (Ollama) as the first result of a launcher search, with its own icon.">
+      <figcaption>
+        It installs as an app rather than staying in the keg, so Spotlight,
+        Launchpad and whatever launcher you use all find it by name.
+      </figcaption>
+    </figure>
 
     <figure class="shot-hero">
       <img src="images/menu-under-load.png" width="380"

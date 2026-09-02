@@ -34,6 +34,11 @@ if you would rather it went there. The formula itself lives in
 [aaditya-v-more/homebrew-tap](https://github.com/aaditya-v-more/homebrew-tap);
 this repository is the source it builds from.
 
+<img src="docs/images/app-in-launcher.png" alt="Claude (Ollama) as the first result of a launcher search, with its own icon." width="520">
+
+It installs as an app rather than staying in the keg, so Spotlight, Launchpad
+and whatever launcher you use all find it by name.
+
 This assumes you already have Claude Desktop in `/Applications` and Ollama
 serving its Claude-compatible gateway on `127.0.0.1:11435`. It installs
 neither.
