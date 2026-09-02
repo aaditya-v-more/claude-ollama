@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude (Ollama)</title>
+<meta name="description" content="Claude Desktop, pointed at a local Ollama gateway, without editing anything the app owns.">
+<link rel="canonical" href="https://aaditya-v-more.github.io/claude-ollama/">
+<meta property="og:title" content="Claude (Ollama)">
+<meta property="og:description" content="Claude Desktop, pointed at a local Ollama gateway, without editing anything the app owns.">
+<meta property="og:url" content="https://aaditya-v-more.github.io/claude-ollama/">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --bg:      #fbfaf8;
+    --panel:   #ffffff;
+    --ink:     #1c1a17;
+    --muted:   #6a655e;
+    --faint:   #8d877e;
+    --rule:    #e6e2db;
+    --accent:  #b4532a;
+    --code-bg: #f4f1ec;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:      #161513;
+      --panel:   #1d1c19;
+      --ink:     #eae7e1;
+      --muted:   #a29c93;
+      --faint:   #877f75;
+      --rule:    #2e2c28;
+      --accent:  #e08a5f;
+      --code-bg: #232120;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 44rem; margin: 0 auto; padding: 0 1.5rem; }
+
+  code, pre, .cmd {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.875em;
+  }
+
+  /* ---------- header ---------- */
+
+  header { padding: 5rem 0 3.5rem; }
+
+  h1 {
+    margin: 0 0 0.6rem;
+    font-size: 2.6rem;
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    font-weight: 600;
+  }
+
+  .tagline {
+    margin: 0 0 2.25rem;
+    font-size: 1.2rem;
+    line-height: 1.5;
+    color: var(--muted);
+    max-width: 34rem;
+  }
+
+  .cmd {
+    display: block;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 0.85rem 1rem;
+    overflow-x: auto;
+    white-space: nowrap;
+    color: var(--ink);
+  }
+  .cmd::before { content: "$ "; color: var(--faint); }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 1.1rem;
+    align-items: center;
+  }
+
+  .btn {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border-radius: 7px;
+    border: 1px solid var(--rule);
+    background: var(--panel);
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 0.925rem;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { opacity: 0.88; color: #fff; }
+
+  .req {
+    margin-top: 1.5rem;
+    font-size: 0.875rem;
+    color: var(--faint);
+    max-width: 34rem;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { padding: 2.75rem 0; border-top: 1px solid var(--rule); }
+
+  h2 {
+    margin: 0 0 1.25rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  h3 {
+    margin: 0 0 0.4rem;
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
+
+  p { margin: 0 0 1rem; }
+  p:last-child { margin-bottom: 0; }
+  section > p { color: var(--muted); max-width: 38rem; }
+
+  .item { margin-bottom: 1.9rem; }
+  .item:last-child { margin-bottom: 0; }
+  .item p { color: var(--muted); max-width: 38rem; }
+
+  code:not(.cmd) {
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 0.1em 0.36em;
+  }
+
+  a { color: var(--accent); }
+
+  /* ---------- screenshots ---------- */
+
+  figure { margin: 1.5rem 0 0; }
+
+  figure img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+  }
+
+  figcaption {
+    margin-top: 0.65rem;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--faint);
+    max-width: 32rem;
+  }
+
+  .shot-hero { margin-top: 2.5rem; }
+  .shot-hero img { width: 380px; }
+  .shot-settings img { width: 100%; max-width: 480px; }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 2.25rem 0 4rem;
+    font-size: 0.875rem;
+    color: var(--faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.4rem;
+    align-items: baseline;
+  }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+  footer .spacer { flex: 1; }
+
+  @media (max-width: 34rem) {
+    header { padding: 3.5rem 0 2.5rem; }
+    h1 { font-size: 2.1rem; }
+    .tagline { font-size: 1.08rem; }
+    .cmd { font-size: 0.78rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <h1>Claude&nbsp;(Ollama)</h1>
+    <p class="tagline">
+      Claude Desktop, pointed at a local Ollama gateway, without editing
+      anything the app owns.
+    </p>
+
+    <code class="cmd">brew install --cask aaditya-v-more/tap/claude-ollama</code>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="https://github.com/aaditya-v-more/claude-ollama/releases/latest">Download the latest release</a>
+      <a class="btn" href="https://github.com/aaditya-v-more/claude-ollama">View on GitHub</a>
+    </div>
+
+    <p class="req">
+      macOS 11 or newer. Assumes you already have Claude Desktop in
+      <code>/Applications</code> and Ollama serving its Claude-compatible
+      gateway on <code>127.0.0.1:11435</code>. It installs neither.
+    </p>
+
+    <figure class="shot-hero">
+      <img src="images/menu-under-load.png" width="380"
+           alt="The menu bar item during a run: 2 in flight of 3, 0 queued, 1338 served, 13 retried, 0 gave up, 2 of 3 models at 1M, and the time of the last pushback from the gateway.">
+      <figcaption>
+        What the proxy is doing, while it is doing it — in flight against the
+        limit, what the gateway pushed back on, and how many models were found
+        to have a 1M window.
+      </figcaption>
+    </figure>
+  </header>
+
+  <section>
+    <h2>What it is</h2>
+
+    <div class="item">
+      <h3>Environment overrides</h3>
+      <p>
+        A launcher that starts Claude Desktop with the retry, concurrency,
+        timeout and context-window variables set for a small self-hosted
+        endpoint. They are process environment only — quit the app and nothing
+        remains.
+      </p>
+    </div>
+
+    <div class="item">
+      <h3>A pacing proxy</h3>
+      <p>
+        A small HTTP proxy in front of the gateway that holds requests to a
+        fixed number in flight, retries the ones upstream still rejects, and
+        repairs two things the gateway gets wrong on the way through.
+      </p>
+    </div>
+
+    <div class="item">
+      <h3>A menu bar item</h3>
+      <p>
+        It stays alongside Claude while the app is open, showing the port the
+        proxy settled on, how many requests are in flight against the limit,
+        and how many the gateway has pushed back on. It can copy the endpoint,
+        open the log, change any setting, and restart the proxy without
+        restarting Claude. Both it and the proxy exit on their own once Claude
+        quits.
+      </p>
+
+      <figure class="shot-settings">
+        <img src="images/menu-settings.png"
+             alt="The Settings submenu open, listing every Claude Desktop and pacing proxy setting with its current value, above the running version and Check for Updates.">
+        <figcaption>
+          Every setting, its current value, and a field that will take a new
+          one. A saved setting applies the next time Claude starts, because an
+          app's environment is fixed at launch.
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why the proxy</h2>
+
+    <div class="item">
+      <h3>Pacing</h3>
+      <p>
+        Ollama Cloud serves a small fixed number of requests concurrently and
+        returns 529 for the overflow, with no <code>Retry-After</code>. Claude
+        Code cannot pace itself against that — it retries blindly until it runs
+        out of attempts. The proxy holds in-flight requests behind a semaphore,
+        so excess requests wait in line locally instead of being rejected
+        upstream, and retries anything that still comes back with a doubling
+        delay. A retry only ever happens before the first response byte, so a
+        partly streamed reply is never restarted.
+      </p>
+    </div>
+
+    <div class="item">
+      <h3>Context windows</h3>
+      <p>
+        Claude Desktop decides a model has a 1M window by matching
+        <code>[1m]</code> in the model ID, and the gateway never sets it — so
+        every model falls back to the 200k default regardless of what it can
+        actually do. Raising the context setting cannot fix this on its own: it
+        is ignored for any model whose name starts with <code>claude-</code>,
+        and every Ollama alias does. The proxy reads each model's real
+        <code>context_length</code> from Ollama's own API and tags the catalog
+        accordingly.
+      </p>
+    </div>
+
+    <div class="item">
+      <h3>The double slash</h3>
+      <p>
+        The app's setup probe joins its stored base URL with
+        <code>/v1/models</code> without trimming, asking for
+        <code>//v1/models</code>. The gateway's router is exact-match and 404s
+        it, which surfaces as "gateway returned no usable models" even when
+        inference works fine. The proxy collapses the path.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Updates</h2>
+    <p>
+      The app updates itself. While it is running it checks
+      <a href="appcast.xml">an appcast</a> hourly, downloads anything newer in
+      the background, and installs it when Claude quits. Nothing is swapped
+      underneath a running session, nothing relaunches, and nothing asks.
+      Updates are signed with an EdDSA key whose public half ships inside the
+      app; anything that does not verify against it is refused.
+    </p>
+  </section>
+
+  <section>
+    <h2>Cost</h2>
+    <p>
+      Free, and staying that way — no licence to buy, no account to make,
+      nothing measured and sent anywhere. If it saved you the trouble, there's
+      a <a href="https://ko-fi.com/aadityavmore">tip jar</a>. Ollama moves its
+      gateway around, Claude Desktop moves its own furniture every few weeks,
+      and that's what the money is for.
+    </p>
+  </section>
+
+  <footer>
+    <span>MIT</span>
+    <a href="https://github.com/aaditya-v-more/claude-ollama">Source</a>
+    <a href="https://github.com/aaditya-v-more/claude-ollama#readme">Documentation</a>
+    <a href="https://github.com/aaditya-v-more/claude-ollama/issues">Issues</a>
+    <span class="spacer"></span>
+    <span>Not affiliated with Anthropic or Ollama.</span>
+  </footer>
+
+</div>
+
+</body>
+</html>

@@ -18,6 +18,8 @@ Two pieces:
 Plus a `Claude (Ollama).app` launcher, which stays in the menu bar while Claude
 is open, shows what the proxy is doing, and keeps itself up to date.
 
+<img src="docs/images/menu-under-load.png" alt="The menu bar item during a run: 2 in flight of 3, 0 queued, 1338 served, 13 retried, 0 gave up, 2 of 3 models at 1M, and the time of the last pushback from the gateway." width="380">
+
 ## Install
 
 ```sh
@@ -62,6 +64,8 @@ launch, so a running one cannot be told about it.
 
 The bottom of the menu says which version this is, and whether a newer one is
 waiting.
+
+<img src="docs/images/menu-settings.png" alt="The Settings submenu open, listing every Claude Desktop and pacing proxy setting with its current value, above the running version and Check for Updates." width="560">
 
 Both the menu item and the proxy exit on their own once Claude quits.
 
