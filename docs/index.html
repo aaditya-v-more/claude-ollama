@@ -191,6 +191,7 @@
   .shot-launcher img { width: 100%; max-width: 520px; }
   .shot-hero img { width: 380px; }
   .shot-settings img { width: 100%; max-width: 480px; }
+  .shot-context img { width: 100%; max-width: 460px; }
 
   /* ---------- footer ---------- */
 
@@ -342,6 +343,15 @@
         <code>context_length</code> from Ollama's own API and tags the catalog
         accordingly.
       </p>
+
+      <figure class="shot-context">
+        <img src="images/context-window-1m.png"
+             alt="Claude's context window readout showing 43.4k of 1M used, 919k free, on the model glm-5.3-flash:cloud.">
+        <figcaption>
+          A cloud model reporting the million tokens it actually has, rather
+          than the 200k it falls back to.
+        </figcaption>
+      </figure>
     </div>
 
     <div class="item">

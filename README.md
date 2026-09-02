@@ -39,6 +39,14 @@ and will take a new one, applied the next time Claude starts.
 The app keeps itself up to date, and both it and the proxy quit when Claude
 does.
 
+Models that can do a million tokens are used as such. Claude Desktop decides
+that by matching `[1m]` in the model ID and the gateway never sets it, so
+without this every model falls back to 200k regardless of what it can actually
+do — the proxy reads each one's real context length from Ollama and tags the
+catalog with it.
+
+<img src="docs/images/context-window-1m.png" alt="Claude's context window readout showing 43.4k of 1M used, 919k free, on the model glm-5.3-flash:cloud." width="480">
+
 ## Uninstall
 
 ```sh
