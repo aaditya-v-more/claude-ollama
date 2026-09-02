@@ -70,7 +70,7 @@ appears alongside it.
 Everything else is in that menu. Every setting is listed with its current value
 and will take a new one, applied the next time Claude starts.
 
-<img src="docs/images/menu-settings.png" alt="The Settings submenu open, listing every Claude Desktop and pacing proxy setting with its current value, above the running version and Check for Updates." width="560">
+<img src="docs/images/menu-settings.png" alt="The Settings submenu open, listing every Claude Desktop and pacing proxy setting with its current value, above the running version and Check for Updates." width="480">
 
 The app keeps itself up to date, and both it and the proxy quit when Claude
 does.
