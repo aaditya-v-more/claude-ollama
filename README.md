@@ -106,7 +106,16 @@ looking:
 defaults write local.aaditya.claude-ollama-launcher SUEnableAutomaticChecks -bool false
 ```
 
-`claude-ollama --help` lists the rest of the commands.
+`claude-ollama --help` lists the rest of the commands, and `./Tools/check.sh`
+runs what a pull request has to get through: every script parsed, the bundle
+built, and the built app asked whether it works.
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+what the pieces are, how to check a change, and what is likely to be accepted.
+Anything that should not be public yet goes to the address in
+[SECURITY.md](SECURITY.md) instead of an issue.
 
 ---
 

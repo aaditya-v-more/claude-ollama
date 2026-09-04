@@ -1,0 +1,32 @@
+# What a pull request has to get through. It is one script — Tools/check.sh —
+# so that what runs here is exactly what a contributor can run before pushing,
+# and there is no second list to keep in step with the first.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Build and check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sparkle is fifteen megabytes fetched from another repository's
+      # releases. The pinned version and its checksum both live in
+      # fetch-sparkle.sh, so keying on that file re-fetches exactly when the
+      # pin moves.
+      - name: Restore the vendored Sparkle framework
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: sparkle-${{ hashFiles('Tools/fetch-sparkle.sh') }}
+
+      - run: ./Tools/check.sh

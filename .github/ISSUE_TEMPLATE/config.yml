@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: What it does and why
+    url: https://aaditya-v-more.github.io/claude-ollama/
+    about: The long version. Some behaviour that looks wrong is deliberate, and this says which.
+  - name: Contributing
+    url: https://github.com/aaditya-v-more/claude-ollama/blob/main/CONTRIBUTING.md
+    about: Building from a checkout, what the pieces are, and how changes get in.

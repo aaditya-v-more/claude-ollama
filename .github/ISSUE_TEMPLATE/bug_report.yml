@@ -1,0 +1,58 @@
+name: Bug report
+description: Something does not work the way it says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `claude-ollama doctor` first if you have not — it checks the
+        gateway, the proxy, the bundle and the profile, and most reports turn
+        out to be one of those lines saying FAIL.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: claude-ollama doctor
+      description: >
+        The whole output. It names paths under your home directory, so take out
+        anything you would rather not post.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: machine
+    attributes:
+      label: macOS version and chip
+      placeholder: 15.5, M2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - Homebrew cask
+        - Built from a checkout
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Proxy log
+      description: >
+        The tail of `~/.local/state/claude-ollama-pace.log`, if requests were
+        failing, hanging, or being retried. Skip it otherwise.
+      render: text
+    validations:
+      required: false

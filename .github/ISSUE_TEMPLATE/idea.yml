@@ -1,0 +1,27 @@
+name: Idea
+description: Something this should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `claude-ollama config` lists every setting with its current value —
+        worth a look first, in case the thing you want is already a name in
+        that list.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What you want it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What you are doing now instead
+      description: >
+        The workaround, or the point at which you gave up. This is the part that
+        decides whether the idea earns its place.
+    validations:
+      required: true
