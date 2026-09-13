@@ -10,6 +10,8 @@
 <meta property="og:description" content="Claude Desktop, pointed at a local Ollama gateway, without editing anything the app owns.">
 <meta property="og:url" content="https://aaditya-v-more.github.io/claude-ollama/">
 <meta property="og:type" content="website">
+<script src="appearance.js"></script>
+<link rel="stylesheet" href="appearance.css">
 <style>
   :root {
     --bg:      #fbfaf8;
@@ -19,11 +21,11 @@
     --faint:   #8d877e;
     --rule:    #e6e2db;
     --accent:  #b4532a;
+    --accent-ink: #ffffff;
     --code-bg: #f4f1ec;
     color-scheme: light;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
+:root[data-theme="dark"] {
       --bg:      #161513;
       --panel:   #1d1c19;
       --ink:     #eae7e1;
@@ -31,10 +33,24 @@
       --faint:   #877f75;
       --rule:    #2e2c28;
       --accent:  #e08a5f;
+      --accent-ink: #1c1108;
       --code-bg: #232120;
       color-scheme: dark;
-    }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+      --bg:      #161513;
+      --panel:   #1d1c19;
+      --ink:     #eae7e1;
+      --muted:   #a29c93;
+      --faint:   #877f75;
+      --rule:    #2e2c28;
+      --accent:  #e08a5f;
+      --accent-ink: #1c1108;
+      --code-bg: #232120;
+      color-scheme: dark;
   }
+}
 
   * { box-sizing: border-box; }
 
@@ -107,9 +123,9 @@
   .btn-primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
   }
-  .btn-primary:hover { opacity: 0.88; color: #fff; }
+  .btn-primary:hover { opacity: 0.88; color: var(--accent-ink); }
 
   .req {
     margin-top: 1.5rem;
@@ -219,11 +235,18 @@
 .creator-links { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; margin-top: 16px; }
 .creator-links a { display: inline-flex; align-items: center; min-height: 44px; }
 .creator-links a:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.site-toolbar { --appearance-line: var(--rule); display: flex; justify-content: flex-end; padding-top: 16px; }
+header { padding-top: 2.5rem; }
+@media (max-width: 34rem) { header { padding-top: 1.5rem; } }
 </style>
 </head>
 <body>
 
 <div class="wrap">
+
+<div class="site-toolbar">
+  <div class="appearance-switcher" role="group" aria-label="Color theme"><button type="button" data-appearance-choice="light" aria-label="Light mode" title="Light mode" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg></button><button type="button" data-appearance-choice="dark" aria-label="Dark mode" title="Dark mode" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 13.2A8.7 8.7 0 0 1 10.8 3.2a8.8 8.8 0 1 0 10 10Z"/></svg></button></div>
+</div>
 
   <header>
     <h1>Claude&nbsp;(Ollama)</h1>
