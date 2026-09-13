@@ -215,6 +215,10 @@
     .tagline { font-size: 1.08rem; }
     .cmd { font-size: 0.78rem; }
   }
+
+.creator-links { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 20px; margin-top: 16px; }
+.creator-links a { display: inline-flex; align-items: center; min-height: 44px; }
+.creator-links a:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
 </style>
 </head>
 <body>
@@ -403,6 +407,11 @@
     <a href="https://github.com/aaditya-v-more/claude-ollama/issues">Issues</a>
     <span class="spacer"></span>
     <span>Not affiliated with Anthropic or Ollama.</span>
+    <nav class="creator-links" data-creator-links aria-label="More from Aaditya More">
+      <a href="https://aadityamore.com/">Website</a>
+      <a href="https://github.com/aaditya-v-more">GitHub</a>
+      <a href="https://www.linkedin.com/in/aadityavmore/">LinkedIn</a>
+    </nav>
   </footer>
 
 </div>
